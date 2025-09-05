@@ -37,17 +37,29 @@ jobs:
       - name: Run pytest (manual)
         shell: bash
         run: |
-          ARGS=""
-          if [[ -n "${{ github.event.inputs.marker }}" ]]; then
-            ARGS="$ARGS -k '${{ github.event.inputs.marker }}'"
+          # соберём опции в массив (надёжнее, чем строки)
+          PYARGS=()
+
+          # маркер из inputs
+          MARKER="${{ github.event.inputs.marker }}"
+
+          # обрежем возможные кавычки по краям (и одинарные, и двойные)
+          MARKER="${MARKER%\"}"; MARKER="${MARKER#\"}"
+          MARKER="${MARKER%\'}"; MARKER="${MARKER#\'}"
+
+          if [[ -n "$MARKER" ]]; then
+            PYARGS+=(-k "$MARKER")
           fi
+
           if ${{ github.event.inputs.verbose }}; then
-            OPTS="-vv"
+            OPTS=(-vv)
           else
-            OPTS="-q"
+            OPTS=(-q)
           fi
-          echo "Running: pytest $OPTS $ARGS"
-          python -m pytest $OPTS $ARGS --junitxml=pytest-report.xml
+
+          echo "Running: pytest ${OPTS[*]} ${PYARGS[*]}"
+          python -m pytest "${OPTS[@]}" "${PYARGS[@]}" --junitxml=pytest-report.xml
+
 
       - name: Upload JUnit report
         uses: actions/upload-artifact@v4
