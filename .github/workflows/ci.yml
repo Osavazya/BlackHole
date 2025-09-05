@@ -22,14 +22,30 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-          cache: 'pip'                # ✅ кэш pip по requirements.txt
+          cache: 'pip'
           cache-dependency-path: backend/requirements.txt
 
+      - name: Show requirements
+        run: |
+          echo "---- requirements.txt ----"
+          cat requirements.txt
+
       - name: Install dependencies
-        run: pip install -r requirements.txt
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+
+      - name: Verify pytest presence
+        run: |
+          python -m pip show pytest || true
+          python -c "import sys; print('PYTHON:', sys.executable)"
+          python -c "import pkgutil; print('has_pytest:', bool(pkgutil.find_loader('pytest')))"
 
       - name: Run backend check
         run: python -m py_compile app/main.py
+
+      - name: Run backend tests
+        run: python -m pytest -q
 
   frontend:
     runs-on: ubuntu-latest
@@ -43,11 +59,12 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: '18'
-          cache: 'npm'                 # ✅ кэш npm по package-lock.json
+          cache: 'npm'
           cache-dependency-path: frontend/package-lock.json
 
       - name: Install dependencies
-        run: npm ci                    # быстрее и детерминированно
+        run: npm ci
 
       - name: Run frontend build
         run: npm run build
+
