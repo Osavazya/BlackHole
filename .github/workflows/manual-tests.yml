@@ -42,19 +42,15 @@ jobs:
         run: |
           ARGS=()
           if [[ -n "$MARKER" ]]; then
-            # корректно экранируем выражение для -k
             ARGS+=(-k "$MARKER")
           fi
-
           if [[ "$VERBOSE" == "true" ]]; then
             OPTS="-vv"
           else
             OPTS="-q"
           fi
-
           echo "Running: pytest $OPTS ${ARGS[*]}"
           python -m pytest $OPTS "${ARGS[@]}" --junitxml=pytest-report.xml
-
 
       - name: Upload JUnit report
         uses: actions/upload-artifact@v4
