@@ -36,29 +36,24 @@ jobs:
 
       - name: Run pytest (manual)
         shell: bash
+        env:
+          MARKER: ${{ github.event.inputs.marker }}
+          VERBOSE: ${{ github.event.inputs.verbose }}
         run: |
-          # соберём опции в массив (надёжнее, чем строки)
-          PYARGS=()
-
-          # маркер из inputs
-          MARKER="${{ github.event.inputs.marker }}"
-
-          # обрежем возможные кавычки по краям (и одинарные, и двойные)
-          MARKER="${MARKER%\"}"; MARKER="${MARKER#\"}"
-          MARKER="${MARKER%\'}"; MARKER="${MARKER#\'}"
-
+          ARGS=()
           if [[ -n "$MARKER" ]]; then
-            PYARGS+=(-k "$MARKER")
+            # корректно экранируем выражение для -k
+            ARGS+=(-k "$MARKER")
           fi
 
-          if ${{ github.event.inputs.verbose }}; then
-            OPTS=(-vv)
+          if [[ "$VERBOSE" == "true" ]]; then
+            OPTS="-vv"
           else
-            OPTS=(-q)
+            OPTS="-q"
           fi
 
-          echo "Running: pytest ${OPTS[*]} ${PYARGS[*]}"
-          python -m pytest "${OPTS[@]}" "${PYARGS[@]}" --junitxml=pytest-report.xml
+          echo "Running: pytest $OPTS ${ARGS[*]}"
+          python -m pytest $OPTS "${ARGS[@]}" --junitxml=pytest-report.xml
 
 
       - name: Upload JUnit report
