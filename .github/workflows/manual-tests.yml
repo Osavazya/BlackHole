@@ -36,18 +36,21 @@ jobs:
 
       - name: Run pytest (manual)
         shell: bash
+        env:
+          MARKER: ${{ github.event.inputs.marker }}
+          VERBOSE: ${{ github.event.inputs.verbose }}
         run: |
-          ARGS=""
-          if [[ -n "${{ github.event.inputs.marker }}" ]]; then
-            ARGS="$ARGS -k '${{ github.event.inputs.marker }}'"
+          ARGS=()
+          if [[ -n "$MARKER" ]]; then
+            ARGS+=(-k "$MARKER")
           fi
-          if ${{ github.event.inputs.verbose }}; then
+          if [[ "$VERBOSE" == "true" ]]; then
             OPTS="-vv"
           else
             OPTS="-q"
           fi
-          echo "Running: pytest $OPTS $ARGS"
-          python -m pytest $OPTS $ARGS --junitxml=pytest-report.xml
+          echo "Running: pytest $OPTS ${ARGS[*]}"
+          python -m pytest $OPTS "${ARGS[@]}" --junitxml=pytest-report.xml
 
       - name: Upload JUnit report
         uses: actions/upload-artifact@v4
