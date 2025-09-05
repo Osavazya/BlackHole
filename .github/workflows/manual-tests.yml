@@ -1,9 +1,6 @@
 name: Manual Tests
 
 on:
-  push:
-    branches: ["feature/tests-backend"]  
-  
   workflow_dispatch:
     inputs:
       marker:
