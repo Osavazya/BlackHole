@@ -32,7 +32,7 @@ jobs:
         run: python -m py_compile app/main.py
       
       - name: Run backend tests
-        run: pytest -q
+        run: python -m pytest -q
 
 
   frontend:
