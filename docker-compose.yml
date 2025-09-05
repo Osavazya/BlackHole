@@ -1,0 +1,24 @@
+version: "3.9"
+services:
+  backend:
+    build: ./backend
+    image: blackhole-backend:dev
+    container_name: blackhole-backend
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./backend/data.db:/app/data.db
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        VITE_API_URL: http://localhost:8000
+    image: blackhole-frontend:dev
+    container_name: blackhole-frontend
+    ports:
+      - "8080:80"
+    depends_on:
+      - backend
+    restart: unless-stopped
