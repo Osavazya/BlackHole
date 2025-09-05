@@ -22,17 +22,34 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-          cache: 'pip'                # ✅ кэш pip по requirements.txt
+          cache: 'pip'
           cache-dependency-path: backend/requirements.txt
 
+      # 👇 покажем, что именно в requirements.txt в раннере
+      - name: Show requirements
+        run: |
+          echo "---- requirements.txt ----"
+          cat requirements.txt
+
+      # 👇 ставим зависимости через тот же интерпретатор
       - name: Install dependencies
-        run: pip install -r requirements.txt
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+
+      # 👇 убедимся, что pytest установлен
+      - name: Verify pytest presence
+        run: |
+          python -m pip show pytest || true
+          python -c "import sys; print('PYTHON:', sys.executable)"
+          python -c "import pkgutil; print('has_pytest:', bool(pkgutil.find_loader('pytest')))"
 
       - name: Run backend check
         run: python -m py_compile app/main.py
-      
+
       - name: Run backend tests
         run: python -m pytest -q
+
 
 
   frontend:
