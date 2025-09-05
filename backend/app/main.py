@@ -43,4 +43,9 @@ def health():
 def version():
     return {"version": "0.1.0"}
 
+@app.get("/ping")
+def ping():
+    return {"status": "ok", "message": "pong"}
+
+
 app.include_router(blackholes_router)
