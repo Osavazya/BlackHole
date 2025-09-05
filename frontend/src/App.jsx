@@ -65,7 +65,17 @@ export default function App() {
         </div>
       </section>
 
-      <div className="footer-note">Нажимай на кнопки сверху, чтобы переключать объекты</div>
+      <footer
+        style={{
+          position: "fixed",
+          bottom: 5,
+          right: 10,
+          color: "gray",
+          fontSize: "12px"
+        }}
+      >
+        Black Hole Gallery v0.1.1
+      </footer>
     </div>
   );
 }
