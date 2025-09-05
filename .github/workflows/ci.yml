@@ -30,6 +30,10 @@ jobs:
 
       - name: Run backend check
         run: python -m py_compile app/main.py
+      
+      - name: Run backend tests
+        run: pytest -q
+
 
   frontend:
     runs-on: ubuntu-latest
@@ -43,7 +47,7 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: '18'
-          cache: 'npm'                 # ✅ кэш npm по package-lock.json
+          cache: 'npm'                 #  кэш npm по package-lock.json
           cache-dependency-path: frontend/package-lock.json
 
       - name: Install dependencies
