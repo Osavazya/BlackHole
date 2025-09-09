@@ -1,6 +1,6 @@
-
 import React, { useState } from "react";
 import "./App.css";
+import PingButton from "./components/PingButton";
 
 const BH = [
   {
@@ -10,7 +10,7 @@ const BH = [
     distance_ly: 26000,
     mass_solar: 4.3e6,
     description:
-      "Сверхмассивая чёрная дыра в центре Млечного Пути. Масса ~4,3 миллиона солнечных. Мы видим её влияние по орбитам звёзд S‑кластера; в 2022 EHT получил её изображение-кольцо из горячего газа."
+      "Сверхмассивая чёрная дыра в центре Млечного Пути. Масса ~4,3 миллиона солнечных. Мы видим её влияние по орбитам звёзд S-кластера; в 2022 EHT получил её изображение-кольцо из горячего газа."
   },
   {
     id: "m87",
@@ -23,7 +23,7 @@ const BH = [
   },
   {
     id: "cygx1",
-    name: "Лебедь X‑1 (Cygnus X‑1)",
+    name: "Лебедь X-1 (Cygnus X-1)",
     img: new URL("./assets/cygnusx1.jpg", import.meta.url).href,
     distance_ly: 7200,
     mass_solar: 21,
@@ -34,14 +34,15 @@ const BH = [
 
 export default function App() {
   const [current, setCurrent] = useState(BH[0].id);
-  const selected = BH.find(b => b.id === current);
+  const selected = BH.find((b) => b.id === current);
 
   return (
     <div>
       <div className="header">
         <h1>Black Holes</h1>
         <div className="spacer" />
-        {BH.map(b => (
+
+        {BH.map((b) => (
           <button
             key={b.id}
             className={"btn " + (b.id === current ? "active" : "")}
@@ -51,6 +52,11 @@ export default function App() {
             {b.name.split(" (")[0]}
           </button>
         ))}
+
+        {/* Кнопка пинга API */}
+        <div style={{ marginLeft: "1rem" }}>
+          <PingButton />
+        </div>
       </div>
 
       <section className="hero" role="region" aria-label={selected.name}>
@@ -58,7 +64,11 @@ export default function App() {
         <div className="panel">
           <h2 className="title">{selected.name}</h2>
           <div className="meta">
-            {selected.distance_ly && <>Расстояние: {selected.distance_ly.toLocaleString("ru-RU")} св. лет · </>}
+            {selected.distance_ly && (
+              <>
+                Расстояние: {selected.distance_ly.toLocaleString("ru-RU")} св. лет ·{" "}
+              </>
+            )}
             {selected.mass_solar && <>Масса: {selected.mass_solar.toLocaleString("ru-RU")} M☉</>}
           </div>
           <p className="desc">{selected.description}</p>

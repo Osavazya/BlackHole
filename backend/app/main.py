@@ -1,22 +1,25 @@
+# backend/app/main.py
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+
 from .db import Base, engine
-from . import models
+from . import models  # чтобы таблицы точно были импортированы
 from .routers.blackholes import router as blackholes_router
+from .settings import settings
 
-app = FastAPI(title="BlackHole API", version="0.1.0")
+# 1) сначала создаём приложение
+app = FastAPI(title="BlackHole API")
 
+# 2) затем вешаем CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:5173", "http://127.0.0.1:5173",  # Vite dev
-        "http://localhost:8080", "http://127.0.0.1:8080"   # nginx build
-    ],
+    allow_origins=settings.allowed_origins or ["http://localhost:5173", "http://localhost:8000"],
+    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-
+# 3) стартовые действия (миграция + сид)
 @app.on_event("startup")
 def on_startup():
     Base.metadata.create_all(bind=engine)
@@ -31,6 +34,7 @@ def on_startup():
                 """
             )
 
+# 4) простые сервисные эндпоинты
 @app.get("/")
 def root():
     return {"message": "Добро пожаловать в проект BlackHole 🚀"}
@@ -45,7 +49,7 @@ def version():
 
 @app.get("/ping")
 def ping():
-    return {"status": "ok", "message": "pong"}
+    return {"status": "ok", "message": "pong", "env": settings.env}
 
-
+# 5) роутеры домена
 app.include_router(blackholes_router)
