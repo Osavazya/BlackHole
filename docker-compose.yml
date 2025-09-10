@@ -13,29 +13,25 @@ services:
 
   backend:
     build:
-      context: ./backend
-      dockerfile: Dockerfile
+      context: .                  # ← КОРЕНЬ РЕПО
+      dockerfile: backend/Dockerfile
     environment:
       ENV: dev
       ALLOWED_ORIGINS_RAW: ${ALLOWED_ORIGINS:-http://localhost:5173}
       DATABASE_URL: postgresql+psycopg2://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@db:5432/${POSTGRES_DB:-blackhole}
     depends_on:
       - db
-    # (локально можно пробросить порт, по желанию)
-    # ports:
-    #   - "8000:8000"
+    # ports: ["8000:8000"]  # (по желанию локально)
 
   frontend:
     build:
-      context: ./frontend
-      dockerfile: Dockerfile
-      args:                      # ← build-args живут здесь
+      context: .                  # ← КОРЕНЬ РЕПО
+      dockerfile: frontend/Dockerfile
+      args:
         VITE_API_URL: ${VITE_API_URL:-/api}
     depends_on:
       - backend
-    # (если образ фронта отдаёт статику на 80 — можно пробросить порт)
-    # ports:
-    #   - "5173:80"
+    # ports: ["5173:80"]   # (по желанию локально)
 
 volumes:
   db_data:
