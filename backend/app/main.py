@@ -50,8 +50,13 @@ def version():
 @app.get("/ping")
 def ping():
 
+
     return {"status": "ok", "message": "pong", "env": settings.env}
 
 # 5) роутеры домена
+
+    return {"status": "ok", "message": "pong"}
+
+
 
 app.include_router(blackholes_router)

@@ -8,30 +8,21 @@ services:
       POSTGRES_USER: ${POSTGRES_USER:-postgres}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
       POSTGRES_DB: ${POSTGRES_DB:-blackhole}
-    volumes:
-      - db_data:/var/lib/postgresql/data
 
   backend:
     build:
-      context: .                  # ← КОРЕНЬ РЕПО
+      context: .                  # КОРЕНЬ репо
       dockerfile: backend/Dockerfile
     environment:
       ENV: dev
       ALLOWED_ORIGINS_RAW: ${ALLOWED_ORIGINS:-http://localhost:5173}
       DATABASE_URL: postgresql+psycopg2://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@db:5432/${POSTGRES_DB:-blackhole}
-    depends_on:
-      - db
-    # ports: ["8000:8000"]  # (по желанию локально)
+    depends_on: [db]
 
   frontend:
     build:
-      context: .                  # ← КОРЕНЬ РЕПО
+      context: .                  # КОРЕНЬ репо
       dockerfile: frontend/Dockerfile
-      args:
+      args:                       # build-args живут здесь
         VITE_API_URL: ${VITE_API_URL:-/api}
-    depends_on:
-      - backend
-    # ports: ["5173:80"]   # (по желанию локально)
-
-volumes:
-  db_data:
+    depends_on: [backend]
