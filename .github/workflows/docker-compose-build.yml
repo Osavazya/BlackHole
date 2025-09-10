@@ -1,0 +1,30 @@
+name: CI — docker compose build
+
+on:
+  push:
+    branches: [ main, dev, feature/** ]
+    paths:
+      - "docker-compose.yml"
+      - "backend/**"
+      - "frontend/**"
+      - ".github/workflows/docker-compose-build.yml"
+  pull_request:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # Если фронтовый Dockerfile ожидает build-arg VITE_API_URL,
+      # прокинем его из секретов (как и в твоём frontend.yml)
+      - name: docker compose build
+        env:
+          VITE_API_URL: ${{ secrets.VITE_API_URL }}
+        run: |
+          docker compose version
+          docker compose -f docker-compose.yml build
