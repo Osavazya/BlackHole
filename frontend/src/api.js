@@ -1,12 +1,14 @@
 // frontend/src/api.js
-const API = import.meta.env.VITE_API_URL || "http://localhost:8000";
+
+// Если VITE_API_URL определён (например, в dev) — используем его.
+// Иначе используем относительный путь /api.
+const API = import.meta.env.VITE_API_URL || "/api";
 
 async function handle(res) {
   if (!res.ok) {
     const text = await res.text().catch(() => "");
     throw new Error(`HTTP ${res.status} ${res.statusText}: ${text}`);
   }
-  // если пустой ответ — вернём null, иначе JSON
   const ct = res.headers.get("content-type") || "";
   return ct.includes("application/json") ? res.json() : null;
 }
@@ -26,7 +28,8 @@ export function apiPost(path, body) {
   }).then(handle);
 }
 
-// Быстрый тест соединения с бэком (эндпоинт /ping должен отдавать JSON)
+// Быстрый тест соединения с бэком (/ping отдаёт JSON)
 export function pingBackend() {
   return apiGet("/ping");
 }
+
