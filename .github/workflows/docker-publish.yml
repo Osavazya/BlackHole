@@ -2,9 +2,7 @@ name: Publish Docker images (GHCR)
 
 on:
   push:
-    branches:
-      - main
-      - feature/ci-basic     # авто на пуш в main
+    branches: [ main ]    # авто на пуш в main
   workflow_dispatch:         # ручной запуск по кнопке
 
 jobs:
