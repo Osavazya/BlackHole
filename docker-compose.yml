@@ -1,51 +1,41 @@
+version: "3.9"
+
 services:
   db:
-    image: postgres:15
-    container_name: blackhole-db
-    restart: always
+    image: postgres:16
+    restart: unless-stopped
     environment:
-      POSTGRES_USER: ${POSTGRES_USER}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-      POSTGRES_DB: ${POSTGRES_DB}
-    ports:
-      - "5432:5432"
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_DB: ${POSTGRES_DB:-blackhole}
     volumes:
-      - pg_data:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
-      interval: 5s
-      timeout: 3s
-      retries: 10
+      - db_data:/var/lib/postgresql/data
 
   backend:
     build:
-      context: .
-      dockerfile: backend/Dockerfile
-    env_file:
-      - backend/.env
+      context: ./backend
+      dockerfile: Dockerfile
     environment:
-      # Переопределяем DATABASE_URL на Postgres
-      DATABASE_URL: postgresql+psycopg2://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
+      ENV: dev
+      ALLOWED_ORIGINS_RAW: ${ALLOWED_ORIGINS:-http://localhost:5173}
+      DATABASE_URL: postgresql+psycopg2://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@db:5432/${POSTGRES_DB:-blackhole}
     depends_on:
-      db:
-        condition: service_healthy
-    volumes:
-      - ./backend:/app
-    ports:
-      - "8000:8000"
+      - db
+    # (локально можно пробросить порт, по желанию)
+    # ports:
+    #   - "8000:8000"
 
   frontend:
     build:
-      context: .
-      dockerfile: frontend/Dockerfile
-    environment:
-      VITE_API_URL: http://backend:8000
-      args:
-        VITE_API_URL: /api   # можно вообще убрать, оставил как дефолт
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:                      # ← build-args живут здесь
+        VITE_API_URL: ${VITE_API_URL:-/api}
     depends_on:
       - backend
-    ports:
-      - "8080:80"
+    # (если образ фронта отдаёт статику на 80 — можно пробросить порт)
+    # ports:
+    #   - "5173:80"
 
 volumes:
-  pg_data:
+  db_data:
