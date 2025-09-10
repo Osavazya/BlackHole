@@ -13,4 +13,8 @@ frontend/dist/
 
 # App data
 backend/data.db
-.env
+
+
+# env files
+backend/.env
+frontend/.env
