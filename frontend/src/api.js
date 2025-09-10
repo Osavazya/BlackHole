@@ -16,14 +16,17 @@ async function handle(res) {
 export function apiGet(path) {
   return fetch(`${API}${path}`, {
     method: "GET",
-    headers: { "Accept": "application/json" },
+    headers: { Accept: "application/json" },
   }).then(handle);
 }
 
 export function apiPost(path, body) {
   return fetch(`${API}${path}`, {
     method: "POST",
-    headers: { "Content-Type": "application/json", "Accept": "application/json" },
+    headers: {
+      "Content-Type": "application/json",
+      Accept: "application/json",
+    },
     body: JSON.stringify(body ?? {}),
   }).then(handle);
 }
@@ -32,4 +35,3 @@ export function apiPost(path, body) {
 export function pingBackend() {
   return apiGet("/ping");
 }
-
