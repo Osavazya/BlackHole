@@ -2,8 +2,8 @@ name: Publish Docker images (GHCR)
 
 on:
   push:
-    branches: [ main ]    # авто на пуш в main
-  workflow_dispatch:         # ручной запуск по кнопке
+    branches: [ main ]
+  workflow_dispatch:
 
 jobs:
   build-and-push:
@@ -27,22 +27,35 @@ jobs:
         id: repo
         run: echo "prefix=ghcr.io/${GITHUB_REPOSITORY,,}" >> $GITHUB_OUTPUT
 
-      # Backend
+      # Backend — контекст = корень репо
       - name: Build backend
         run: |
           IMAGE=${{ steps.repo.outputs.prefix }}-backend
-          DOCKER_BUILDKIT=1 docker build -f backend/Dockerfile -t $IMAGE:latest -t $IMAGE:${GITHUB_SHA::7} backend
+          DOCKER_BUILDKIT=1 docker build \
+            -f backend/Dockerfile \
+            -t $IMAGE:latest \
+            -t $IMAGE:${GITHUB_SHA::7} \
+            .
+
       - name: Push backend
         run: |
           IMAGE=${{ steps.repo.outputs.prefix }}-backend
           docker push $IMAGE:latest
           docker push $IMAGE:${GITHUB_SHA::7}
 
-      # Frontend
+      # Frontend — контекст = корень репо (+ build-arg при необходимости)
       - name: Build frontend
+        env:
+          VITE_API_URL: ${{ secrets.VITE_API_URL }}
         run: |
           IMAGE=${{ steps.repo.outputs.prefix }}-frontend
-          DOCKER_BUILDKIT=1 docker build -f frontend/Dockerfile -t $IMAGE:latest -t $IMAGE:${GITHUB_SHA::7} frontend
+          DOCKER_BUILDKIT=1 docker build \
+            -f frontend/Dockerfile \
+            --build-arg VITE_API_URL="${VITE_API_URL:-/api}" \
+            -t $IMAGE:latest \
+            -t $IMAGE:${GITHUB_SHA::7} \
+            .
+
       - name: Push frontend
         run: |
           IMAGE=${{ steps.repo.outputs.prefix }}-frontend
