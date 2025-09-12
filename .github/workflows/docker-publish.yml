@@ -44,17 +44,18 @@ jobs:
           docker push $IMAGE:${GITHUB_SHA::7}
 
       # Frontend — контекст = корень репо (+ build-arg при необходимости)
+      # Frontend — собираем прод-образ с API по пути /api
       - name: Build frontend
-        env:
-          VITE_API_URL: ${{ secrets.VITE_API_URL }}
         run: |
           IMAGE=${{ steps.repo.outputs.prefix }}-frontend
           DOCKER_BUILDKIT=1 docker build \
             -f frontend/Dockerfile \
-            --build-arg VITE_API_URL="${VITE_API_URL:-/api}" \
+            --build-arg VITE_API_URL=/api \
             -t $IMAGE:latest \
             -t $IMAGE:${GITHUB_SHA::7} \
-            .
+             .
+
+            
 
       - name: Push frontend
         run: |
