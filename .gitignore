@@ -18,3 +18,5 @@ backend/data.db
 # env files
 backend/.env
 frontend/.env
+
+docker-compose.override.yml

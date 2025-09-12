@@ -1,6 +1,7 @@
 services:
   db:
     image: postgres:16
+    restart: unless-stopped
     environment:
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
@@ -14,30 +15,30 @@ services:
       retries: 20
 
   backend:
-    build:
-      context: .
-      dockerfile: backend/Dockerfile
+    image: ghcr.io/osavazya/blackhole-backend:latest
+    restart: unless-stopped
     environment:
-      SECRET_KEY: ${SECRET_KEY:-dev-secret}   # ← добавили
-      ENV: dev
-      ALLOWED_ORIGINS_RAW: http://localhost:5173,http://localhost:8000
+      SECRET_KEY: ${SECRET_KEY:?set it}
+      ENV: prod
+      ALLOWED_ORIGINS_RAW: ${ALLOWED_ORIGINS_RAW:-http://localhost:5173}
       DATABASE_URL: postgresql+psycopg2://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
     depends_on:
       db:
         condition: service_healthy
+    # Для локальной проверки прод-образов раскомментируй:
     # ports:
     #   - "8000:8000"
 
   frontend:
-    build:
-      context: .
-      dockerfile: frontend/Dockerfile
-      args:
-        VITE_API_URL: http://backend:8000
+    image: ghcr.io/osavazya/blackhole-frontend:latest
+    restart: unless-stopped
+    environment:
+      VITE_API_URL: http://backend:8000
     depends_on:
       - backend
+    # Для локальной проверки:
     # ports:
-    #   - "5173:80"
+    #   - "8080:80"
 
 volumes:
   db_data:
