@@ -18,10 +18,7 @@ backend/data.db
 # env files
 backend/.env
 frontend/.env
-
-<<<<<<< HEAD
-docker-compose.override.yml
-=======
-# Local dev compose
-/docker-compose.override.yml
->>>>>>> 0282af1 (chore: ignore local override compose)
+.env
+.env.*
+*/.env
+*/.env.*
