@@ -1,40 +1,55 @@
-# backend/app/main.py
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from contextlib import asynccontextmanager
+from sqlalchemy import text
 
 from .db import Base, engine
-from . import models  # чтобы таблицы точно были импортированы
+from . import models  # важно, чтобы таблицы были зарегистрированы
 from .routers.blackholes import router as blackholes_router
 from .settings import settings
 
-# 1) сначала создаём приложение
-app = FastAPI(title="BlackHole API")
 
-# 2) затем вешаем CORS
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=settings.allowed_origins or ["http://localhost:5173", "http://localhost:8000"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+# --- CORS ---
+ALLOWED_ORIGINS = settings.allowed_origins or [
+    "http://localhost:5173",
+    "http://localhost:8000",
+    "https://app.blackhole.bond",
+]
 
-# 3) стартовые действия (миграция + сид)
-@app.on_event("startup")
-def on_startup():
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # --- startup ---
     Base.metadata.create_all(bind=engine)
     with engine.begin() as conn:
-        existing = conn.exec_driver_sql("SELECT COUNT(*) FROM blackholes").scalar()
-        if existing == 0:
-            conn.exec_driver_sql(
-                """
-                INSERT INTO blackholes (id, name, distance_ly, mass_solar, description) VALUES
-                (1, 'Стрелец A*', 26000, 4.3e6, 'Сверхмассивная ЧД в центре Млечного Пути.'),
-                (2, 'M87*', 53000000, 6.5e9, 'Первая тень ЧД, снятая EHT (2019).');
-                """
-            )
+        # если таблица пустая — засеять начальными данными
+        count = conn.exec_driver_sql("SELECT COUNT(*) FROM blackholes").scalar()
+        if count == 0:
+            # Для SQLite/PG подойдёт такой безопасный сид
+            conn.execute(text("""
+                INSERT INTO blackholes (id, name, distance_ly, mass_solar, description)
+                VALUES
+                  (1, 'Стрелец A*', 26000, 4.3e6, 'Сверхмассивная ЧД в центре Млечного Пути.'),
+                  (2, 'M87*', 53000000, 6.5e9, 'Первая тень ЧД, снятая EHT (2019).')
+                ON CONFLICT (id) DO NOTHING
+            """))
+    yield
+    # --- shutdown --- (пока ничего)
 
-# 4) простые сервисные эндпоинты
+
+app = FastAPI(title="BlackHole API", lifespan=lifespan)
+
+# CORS — лучше без "*", сузим методы и заголовки
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=ALLOWED_ORIGINS,
+    # если нужны все поддомены *.blackhole.bond — используй:
+    # allow_origin_regex=r"^https://([a-z0-9-]+\.)?blackhole\.bond$",
+    allow_credentials=True,
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type", "Accept"],
+)
+
+# --- сервисные эндпоинты ---
 @app.get("/")
 def root():
     return {"message": "Добро пожаловать в проект BlackHole 🚀"}
@@ -49,9 +64,7 @@ def version():
 
 @app.get("/ping")
 def ping():
-
     return {"status": "ok", "message": "pong", "env": settings.env}
 
-# 5) роутеры домена
-
+# --- доменные роутеры ---
 app.include_router(blackholes_router)

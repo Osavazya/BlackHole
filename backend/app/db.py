@@ -1,19 +1,40 @@
-from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker, DeclarativeBase
+# app/db.py
 from pathlib import Path
 
-# SQLite for MVP; can swap to Postgres via env later.
-DB_PATH = Path(__file__).resolve().parent.parent / "data.db"
-SQLALCHEMY_DATABASE_URL = f"sqlite:///{DB_PATH}"
+from urllib.parse import urlparse
 
-engine = create_engine(
-    SQLALCHEMY_DATABASE_URL,
-    connect_args={"check_same_thread": False},
-)
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker, DeclarativeBase
+
+from .settings import settings
+
+# 1) Берём URL из настроек (по умолчанию — sqlite:///./data.db)
+DATABASE_URL = settings.safe_database_url  # добавит sslmode=require для PG, если его нет
+
+# 2) Определяем тип БД
+parsed = urlparse(DATABASE_URL)
+is_sqlite = parsed.scheme.startswith("sqlite")
+
+# 3) Параметры движка
+engine_kwargs = {
+    "pool_pre_ping": True,  # чинит «висящие» коннекты
+}
+
+if is_sqlite:
+    # Для SQLite (файл). Разрешаем многопоточность.
+    engine_kwargs["connect_args"] = {"check_same_thread": False}
+else:
+    # Для Postgres/др. — небольшой пул без перелива
+    engine_kwargs.update(pool_size=5, max_overflow=0)
+
+engine = create_engine(DATABASE_URL, **engine_kwargs)
+
+SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+
 
 class Base(DeclarativeBase):
     pass
+
 
 def get_db():
     db = SessionLocal()
