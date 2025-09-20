@@ -22,3 +22,9 @@ frontend/.env
 .env.*
 */.env
 */.env.*
+.env
+data.db
+__pycache__/
+package/
+backend.zip
+*.pyc
