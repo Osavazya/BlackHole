@@ -78,3 +78,4 @@ jobs:
         run: |
           curl -sS "https://9d8q2oy0y1.execute-api.eu-south-2.amazonaws.com/prod/ping" \
             -H "Origin: https://app.blackhole.bond" >/dev/null || true
+
