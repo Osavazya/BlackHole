@@ -1,245 +1,182 @@
-# BlackHole — Full‑stack MVP (FastAPI + React)
+# BlackHole
 
-**Production‑style portfolio project.** Frontend is React/Vite, backend is FastAPI. Production hosting is cost‑efficient, serverless: **S3 + CloudFront** for static frontend, **API Gateway + Lambda** for the API, **DynamoDB** for persistence, **SSM Parameter Store** for secrets. Domain: `app.blackhole.bond`.
+Serverless web app: React/Vite frontend on S3 + CloudFront and FastAPI backend on AWS Lambda behind API Gateway. PostgreSQL database on Neon. Automated deployments via GitHub Actions.
 
-> Why serverless? Near‑zero monthly cost when idle. The classic ECS + ALB + RDS option is also sketched below for interviews.
+## Links
 
----
+- App: https://app.blackhole.bond
+- API: https://api.blackhole.bond
 
-## Repository layout
-
-```
-.
-├─ backend/            # FastAPI
-├─ frontend/           # React + Vite
-├─ docker-compose.yml  # Dev: run both locally
-├─ .env.example        # env template (never commit real .env)
-└─ README.md
-```
-
----
-
-## Quick start (local)
-
-### A) Docker Compose (recommended for dev)
-1. Copy env templates:
-   ```bash
-   cp .env.example .env
-   cp backend/.env.example backend/.env
-   cp frontend/.env.example frontend/.env
-   ```
-2. Run:
-   ```bash
-   docker compose up -d --build
-   ```
-3. Open:
-   - Frontend: http://localhost:8080
-   - Backend Swagger: http://localhost:8000/docs
-
-> If you keep a local-only override file, run: `docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d`.
-
-### B) NPM + Uvicorn (no Docker)
-Frontend:
-```bash
-cd frontend
-npm ci
-VITE_API_URL=/api npm run dev
-```
-Backend:
-```bash
-cd backend
-python -m venv .venv && source .venv/bin/activate  # Windows: .venv\Scripts\activate
-pip install -r requirements.txt
-uvicorn app.main:app --reload --port 8000
-```
-
----
-
-## Production architecture (serverless)
+## Architecture
 
 ```
-User ─▶ CloudFront (TLS) ─┬─▶ Origin #1: S3 (static frontend)
-                          └─▶ Origin #2: API Gateway (HTTP API) ─▶ Lambda (FastAPI via Mangum)
-
-Secrets: SSM Parameter Store (SecureString)
-Storage: DynamoDB (on‑demand / free tier)
-Logs: CloudWatch Logs
-DNS: Cloudflare (or your DNS provider)
+Browser (app.blackhole.bond)
+        │
+        ▼
+CloudFront → S3 (static frontend)
+        │
+        └── API requests ──► API Gateway (api.blackhole.bond)
+                               │
+                               ▼
+                           AWS Lambda (FastAPI + Mangum)
+                               │
+                               ▼
+                           Neon Postgres (TLS, sslmode=require)
 ```
 
 **Why this design**
-- **S3 + CloudFront**: fast global CDN, HTTPS, pennies per month.
-- **API Gateway + Lambda**: pay per request, no idle cost.
-- **DynamoDB**: generous always‑free tier for small apps.
-- **SSM**: free secret storage (standard tier).
+- No servers to maintain; low cost at low/medium traffic.
+- Automatic scaling via Lambda.
+- Static hosting + global CDN with CloudFront.
+- Managed Postgres (Neon) with branches/environments and TLS by default.
 
----
+## Tech Stack
 
-## Environment variables
+- **Frontend:** React, Vite, TypeScript (optional), deployed to **S3 + CloudFront**
+- **Backend:** **FastAPI** packaged for **AWS Lambda** (via Mangum), exposed through **API Gateway (HTTP API, payload v2)**
+- **Database:** **Neon Postgres**
+- **CI/CD:** **GitHub Actions** (frontend & backend workflows)
+- **Region:** `eu-south-2` (Madrid)
+- **Domains & TLS:** ACM certificates in the same region; custom domains `app.blackhole.bond` and `api.blackhole.bond`
+
+## Requirements
+
+- Node.js 18+
+- Python 3.11+
+- AWS account with IAM permissions to update Lambda, API Gateway, S3, CloudFront, ACM
+- Neon Postgres database (free tier is fine)
+- GitHub repository with Actions enabled
+
+## Local Development
 
 ### Backend (FastAPI)
-| Name | Purpose | Example |
-|---|---|---|
-| `ENV` | runtime mode | `dev` / `prod` |
-| `SECRET_KEY` | app secret | long random string |
-| `ALLOWED_ORIGINS_RAW` | CORS allowlist | `https://app.blackhole.bond` |
-| `DB_URL` *(if used)* | DB connection string | `dynamodb://` or `postgresql+psycopg2://...` |
 
-In production these values live in **SSM Parameter Store**: `/blackhole/SECRET_KEY`, `/blackhole/ALLOWED_ORIGINS_RAW`, `/blackhole/DB_URL`.
+```bash
+python -m venv .venv
+source .venv/bin/activate        # Windows: .venv\Scripts\activate
+pip install -r requirements.txt
+
+# Run locally
+uvicorn app.main:app --reload --port 8000
+```
+
+Create `.env` (local):
+```
+DATABASE_URL=postgresql+psycopg://user:pass@host/dbname?sslmode=require
+CORS_ALLOWED_ORIGINS=https://app.blackhole.bond,http://localhost:5173
+STAGE=dev
+```
+
+Health check:
+```bash
+curl -i http://localhost:8000/health
+```
+
+**Notes for Lambda compatibility**
+- Keep DB connections short-lived; enable SQLAlchemy `pool_pre_ping=True` to avoid stale connections.
+- File system is ephemeral; persist data in the DB or S3.
+- Expect a small cold-start delay on the first request after idle.
 
 ### Frontend (Vite)
-| Name | Purpose | Example |
-|---|---|---|
-| `VITE_API_URL` | base API URL (baked at build time) | `/api`
 
-> For production **build the frontend with `VITE_API_URL=/api`** so all requests go via CloudFront → API Gateway.
-
----
-
-## Build the frontend for production
 ```bash
-cd frontend
-npm ci
-VITE_API_URL=/api npm run build
-# output in frontend/dist/
-```
-Upload the **contents** of `dist/` to S3 (bucket root).
-
----
-
-## Deployment (serverless, AWS Console)
-
-### 1) Frontend: S3 + CloudFront + custom domain
-1. **S3**: create bucket (e.g., `app.blackhole.bond`), *Block public access = ON*, SSE‑S3. Upload `dist/` contents.
-2. **ACM (us‑east‑1)**: request public cert for `app.blackhole.bond` (DNS validation).
-3. **DNS**: add the **CNAME** from ACM in your DNS (Cloudflare/Hostinger/Route 53) until the cert is **Issued**.
-4. **CloudFront**: create distribution
-   - Origin: S3 with **OAC** (click *Update bucket policy*)
-   - Default root object: `index.html`
-   - Behavior: Redirect HTTP→HTTPS, GET/HEAD, Compression ON
-   - Alternate domain: `app.blackhole.bond`
-   - SSL cert: the ACM certificate from us‑east‑1
-5. **DNS**: add `CNAME app → dxxxx.cloudfront.net`.
-6. **SPA routing** (if needed): CloudFront → *Error pages*: 403→200 `/index.html`, 404→200 `/index.html` (TTL 0).
-
-### 2) Backend: API Gateway + Lambda
-1. **Lambda**: package FastAPI for Lambda (see entrypoint below), runtime Python 3.11, env/SSM parameters.
-2. **API Gateway (HTTP API)**: create API, integration **Lambda proxy**, route `ANY /{proxy+}`.
-3. **CloudFront**: add a second behavior for the API:
-   - Path pattern: `/api/*`
-   - Origin: API Gateway endpoint
-   - Allowed methods: `GET, HEAD, OPTIONS, POST, PUT, DELETE, PATCH`
-   - Cache policy: **CachingDisabled**
-4. **CORS**: backend uses `ALLOWED_ORIGINS_RAW=https://app.blackhole.bond`.
-
-#### Lambda entrypoint (FastAPI + Mangum)
-`backend/lambda_app.py`:
-```python
-from mangum import Mangum
-from app.main import app  # your FastAPI app
-
-handler = Mangum(app)
-```
-Build & upload example:
-```bash
-cd backend
-python -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt -t ./package
-cp -r app package/
-cd package && zip -r ../lambda.zip . && cd ..
-# upload lambda.zip in AWS Lambda Console
+npm install
+npm run dev    # usually http://localhost:5173
 ```
 
----
-
-## API endpoints (examples)
-- `GET /api/health` → `{ "status": "ok" }`
-- `GET /api/version` → `{ "version": "x.y.z" }`
-- `GET /api/ping` → `{ "status": "ok", "message": "pong" }`
-
-The UI has a **Ping API** button that calls the backend.
-
----
-
-## Cost & operating modes
-- **Live demo:** CloudFront active, Lambda/API GW active → you only pay for requests; S3 costs cents.
-- **Hibernate:** nothing to stop in serverless — no hourly cost anyway.
-- **Parked:** remove `app` CNAME if you don’t want it publicly reachable; infra stays in place.
-
-> For interview purposes you can also discuss an ECS + ALB + RDS variant (see below) and the start/stop strategy.
-
----
-
-## Alternative for interviews: ECS Fargate + ALB + RDS (short sketch)
-- **VPC**: 2 public + 2 private subnets, IGW, (NAT optional to save cost), SGs: `alb-sg`, `ecs-sg`, `rds-sg`.
-- **RDS PostgreSQL**: private subnets, SG `rds-sg` (ingress from `ecs-sg`).
-- **SSM**: `/blackhole/SECRET_KEY`, `/blackhole/ALLOWED_ORIGINS_RAW`, `/blackhole/DATABASE_URL`.
-- **ECS Fargate**: two services (frontend:80, backend:8000) in public subnets (AssignPublicIp=ENABLED), CloudWatch logs.
-- **ALB + HTTPS**: :80→redirect→:443, :443 with ACM; rules: `/api*` → backend TG(8000), default → frontend TG(80).
-- **DNS**: `app.blackhole.bond` → ALB (CNAME).
-
-This stack is recognizable on interviews but costs ≈ $50+/mo if left running 24/7.
-
----
-
-## CI/CD (sketches)
-
-### Frontend → S3 + CloudFront (GitHub Actions)
-```yaml
-name: Deploy frontend to S3+CloudFront
-on:
-  workflow_dispatch:
-  push:
-    branches: [ main ]
-    paths: [ 'frontend/**' ]
-jobs:
-  deploy:
-    runs-on: ubuntu-latest
-    permissions: { id-token: write, contents: read }
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with: { node-version: 18 }
-      - run: |
-          cd frontend
-          npm ci
-          VITE_API_URL=/api npm run build
-      - uses: aws-actions/configure-aws-credentials@v4
-        with:
-          role-to-assume: arn:aws:iam::<ACCOUNT_ID>:role/gh-oidc-blackhole-deploy
-          aws-region: eu-south-2
-      - name: Sync to S3
-        run: aws s3 sync frontend/dist s3://app.blackhole.bond/ --delete
-      - name: Invalidate CloudFront cache
-        run: aws cloudfront create-invalidation --distribution-id ${{ secrets.CF_DIST_ID }} --paths '/*'
+Create `.env` (frontend):
+```
+VITE_API_BASE=https://api.blackhole.bond
 ```
 
-### Backend → Lambda (idea)
-Build `lambda.zip` in CI, upload to S3, and update Lambda with `aws lambda update-function-code`.
+## Deployment
 
----
+### Frontend (S3 + CloudFront)
+
+- Build: `npm run build`
+- Upload the `dist/` artifacts to S3 bucket
+- Invalidate CloudFront distribution to publish the new version
+- Cache best practices: long max-age for hashed assets, short for HTML
+
+### Backend (Lambda + API Gateway)
+
+- Package FastAPI with dependencies for Lambda (zip or Lambda layer)
+- Update Lambda function code
+- HTTP API in API Gateway with route `ANY /{proxy+}` (payload format 2.0)
+- **CORS:** disabled in API Gateway; CORS headers are returned by the app (middleware)
+
+Environment variables (Lambda):
+```
+DATABASE_URL=postgresql+psycopg://...sslmode=require
+CORS_ALLOWED_ORIGINS=https://app.blackhole.bond
+STAGE=prod
+```
+
+### Custom Domains & TLS
+
+- Request a public certificate in **ACM** in `eu-south-2`
+- Validate via DNS (CNAMEs)
+- Attach to API Gateway custom domain: `api.blackhole.bond`
+- Point DNS (A/AAAA/ALIAS) to API Gateway domain name
+- Frontend domain `app.blackhole.bond` points to CloudFront
+
+## CI/CD (GitHub Actions)
+
+Recommended setup:
+- **backend.yml** — build package/layer, update Lambda code; assume AWS role via GitHub **OIDC** (no long-lived keys)
+- **frontend.yml** — build and upload to S3, then CloudFront invalidation
+- Branch strategy: `main` → production, `dev` → staging (optional separate stacks)
+
+Secrets / variables to configure in GitHub:
+- `AWS_ROLE_TO_ASSUME` (for OIDC), `AWS_REGION=eu-south-2`
+- `S3_BUCKET`, `CLOUDFRONT_DISTRIBUTION_ID`
+- `NEON_DATABASE_URL` (or use AWS Secrets Manager and fetch at deploy/runtime)
+
+## API (Draft)
+
+- `GET /health` — liveness check
+- `GET /blackholes` — list items
+- `GET /blackholes/{id}` — item details
+- `POST /auth/signup` — user registration (passwords are stored **only as hashes**)
+- `POST /auth/login` — login, return JWT
+- `GET /me` — current user profile (JWT required)
+
+**Auth & Passwords**
+- Use `bcrypt` or `argon2` for hashing (never store plain text)
+- Issue short-lived access tokens (JWT) + optional refresh tokens
+- Store only necessary claims in JWT
+
+## Observability
+
+- **CloudWatch Logs** for Lambda (review tracebacks and performance)
+- **CloudWatch Metrics/Alarms**: 5xx errors, duration, throttles, cold starts
+- (Optional) **AWS X-Ray** for distributed tracing
+- (Optional) Structured logging (JSON) for easier parsing
 
 ## Security
-- **Never commit** real `.env` files; keep only `*.example` templates.
-- Secrets live in **SSM Parameter Store (SecureString)**.
-- CORS restricted to `https://app.blackhole.bond`.
-- HTTPS everywhere (ACM + CloudFront).
+
+- CORS: allow only trusted origins (e.g., `https://app.blackhole.bond`)
+- Rate limiting / throttling at API Gateway
+- Store secrets in **AWS Secrets Manager** or Lambda env vars (encrypted)
+- Use IAM roles with least privilege
+- Enforce TLS: `sslmode=require` for Postgres
+
+## Common Pitfalls
+
+- **CORS blocked:** ensure backend returns `Access-Control-Allow-Origin` with the exact frontend origin; keep CORS disabled in API Gateway if the app handles it.
+- **502/500:** check CloudWatch Logs for stack traces.
+- **DB connection errors:** include `sslmode=require`; enable `pool_pre_ping=True`.
+- **Slow first request:** likely Lambda cold start; subsequent calls are faster.
+
+## Roadmap
+
+- Auth flows (signup/login), roles/permissions
+- API versioning & OpenAPI docs
+- E2E tests (Playwright/Cypress)
+- Infrastructure as Code (Terraform) for full reproducibility
+- Staging environment with separate Neon branch
+- Caching & performance tuning
 
 ---
 
-## Tech stack
-- **Frontend**: React, Vite
-- **Backend**: FastAPI (Python 3.11), Uvicorn, Mangum
-- **Infra (prod)**: S3, CloudFront, API Gateway (HTTP API), Lambda, DynamoDB, SSM, CloudWatch
-- **Dev**: Docker Compose
-
----
-
-## License
-MIT (or update to your preferred license).
-
----
-
-## Contact
-- Author: Oleksii / BlackHole
-- Demo: https://app.blackhole.bond (after CloudFront is configured)
+**Status:** production-ready baseline with room for iteration.
