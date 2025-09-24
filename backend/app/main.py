@@ -18,7 +18,6 @@ ALLOWED_ORIGINS = settings.allowed_origins or [
     "http://localhost:8000",
 ]
 
-
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     try:
@@ -35,10 +34,9 @@ async def lifespan(app: FastAPI):
                     ON CONFLICT (id) DO NOTHING
                 """))
     except Exception:
-        # на старте БД может быть недоступна — сид пропускаем
+        # не валим приложение, если БД недоступна при старте
         pass
     yield
-
 
 app = FastAPI(title="BlackHole API", lifespan=lifespan)
 
@@ -50,36 +48,30 @@ app.add_middleware(
     allow_headers=["Authorization", "Content-Type", "Accept", "X-Requested-With"],
 )
 
-
 @app.get("/")
 def root():
     return {"message": "Добро пожаловать в проект BlackHole 🚀"}
-
 
 @app.get("/health")
 def health():
     return {"status": "ok"}
 
-
 @app.get("/version")
 def version():
     return {"version": "0.1.0"}
 
-
 @app.get("/ping")
 def ping(request: Request):
-    # КЛЮЧЕВОЕ: тест ждёт поле "status": "ok"
+    # ⬇️ тест ждёт именно эти поля
     return JSONResponse(
         {
             "status": "ok",
-            "ok": True,
+            "message": "pong",
             "ts": datetime.utcnow().isoformat() + "Z",
         },
         headers={"X-Debug-Handler": "fastapi"},
     )
 
-
-# Диагностика БД
 @app.get("/db-ping")
 def db_ping():
     engine = get_engine()
@@ -90,6 +82,5 @@ def db_ping():
         return {"db": "ok", "select1": one, "driver": driver}
     except Exception as e:
         return JSONResponse({"db": "error", "driver": driver, "error": str(e)}, status_code=500)
-
 
 app.include_router(blackholes_router)
