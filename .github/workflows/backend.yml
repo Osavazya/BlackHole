@@ -15,6 +15,11 @@ jobs:
   test:
     runs-on: ubuntu-latest
 
+    # чтобы не дублировать working-directory в каждом шаге
+    defaults:
+      run:
+        working-directory: backend
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -25,33 +30,25 @@ jobs:
           python-version: "3.11"
 
       - name: Install dependencies
-        working-directory: backend
         run: |
           python -m pip install -U pip
-          pip install -r requirements.txt
-          python - <<'PY'
-          import importlib.util, sys
-          sys.exit(0 if importlib.util.find_spec("pytest") else 1)
-          PY
-        continue-on-error: true
+          pip install -r requirements.txt -r requirements-dev.txt
+          python -V
+          pip -V
+          pytest --version
 
-      - name: Ensure pytest (fallback)
-        if: failure()
-        run: pip install pytest
-
-      - name: Create backend/.env from secrets
+      # Для CI используем локальную SQLite, чтобы не ходить в внешнюю БД
+      - name: Create .env for tests
         run: |
-          mkdir -p backend
-          echo "SECRET_KEY=${{ secrets.SECRET_KEY }}"                              >  backend/.env
-          echo "DATABASE_URL=${{ secrets.DATABASE_URL }}"                          >> backend/.env
-          echo "ALLOWED_ORIGINS_RAW=${{ secrets.ALLOWED_ORIGINS_RAW }}"            >> backend/.env
-          echo "ENV=${{ secrets.ENV }}"                                            >> backend/.env
-
-      - name: Show .env (masked)
-        run: sed -e 's/SECRET_KEY=.*/SECRET_KEY=***MASKED***/' backend/.env
+          cat > .env <<EOF
+          BACKEND_ENV=dev
+          BACKEND_DATABASE_URL=sqlite:///./data.db
+          BACKEND_ALLOWED_ORIGINS_RAW=http://localhost:5173,https://app.blackhole.bond
+          EOF
+          echo "---- .env ----"
+          sed -e 's/BACKEND_DATABASE_URL=.*/BACKEND_DATABASE_URL=***MASKED***/' .env
 
       - name: Sanity import settings
-        working-directory: backend
         run: |
           python - <<'PY'
           from app.settings import settings
@@ -61,6 +58,6 @@ jobs:
           PY
 
       - name: Run tests
-        working-directory: backend
-        run: |
-          pytest -q
+        env:
+          PYTHONPATH: .
+        run: pytest -q
