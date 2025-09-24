@@ -14,11 +14,9 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
-
-    # чтобы не дублировать working-directory в каждом шаге
     defaults:
       run:
-        working-directory: backend
+        shell: bash
 
     steps:
       - name: Checkout
@@ -30,25 +28,40 @@ jobs:
           python-version: "3.11"
 
       - name: Install dependencies
+        working-directory: backend
         run: |
-          python -m pip install -U pip
-          pip install -r requirements.txt -r requirements-dev.txt
-          python -V
-          pip -V
-          pytest --version
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          # dev-зависимости (pytest, httpx, uvicorn и т.п.)
+          if [ -f requirements-dev.txt ]; then pip install -r requirements-dev.txt; fi
 
-      # Для CI используем локальную SQLite, чтобы не ходить в внешнюю БД
-      - name: Create .env for tests
+      - name: Create backend/.env (with fallbacks for PRs)
+        working-directory: backend
         run: |
-          cat > .env <<EOF
-          BACKEND_ENV=dev
-          BACKEND_DATABASE_URL=sqlite:///./data.db
-          BACKEND_ALLOWED_ORIGINS_RAW=http://localhost:5173,https://app.blackhole.bond
-          EOF
-          echo "---- .env ----"
-          sed -e 's/BACKEND_DATABASE_URL=.*/BACKEND_DATABASE_URL=***MASKED***/' .env
+          mkdir -p .
+          # Фолбэки: если секреты недоступны (PR из форка), используем безопасные значения
+          BK_SECRET="${{ secrets.BACKEND_SECRET_KEY }}"
+          BK_DBURL="${{ secrets.BACKEND_DATABASE_URL }}"
+          BK_ORIGINS="${{ secrets.BACKEND_ALLOWED_ORIGINS_RAW }}"
+          BK_ENV="${{ secrets.BACKEND_ENV }}"
+
+          [ -z "$BK_SECRET" ]  && BK_SECRET="ci-secret"
+          [ -z "$BK_DBURL" ]   && BK_DBURL="sqlite:///./data.db"
+          [ -z "$BK_ORIGINS" ] && BK_ORIGINS="http://localhost:5173"
+          [ -z "$BK_ENV" ]     && BK_ENV="dev"
+
+          {
+            echo "BACKEND_SECRET_KEY=$BK_SECRET"
+            echo "BACKEND_DATABASE_URL=$BK_DBURL"
+            echo "BACKEND_ALLOWED_ORIGINS_RAW=$BK_ORIGINS"
+            echo "BACKEND_ENV=$BK_ENV"
+          } > .env
+
+          # Покажем, что файл создан (замаскировав значения)
+          sed -e 's/=.*/=***MASKED***/' .env
 
       - name: Sanity import settings
+        working-directory: backend
         run: |
           python - <<'PY'
           from app.settings import settings
@@ -58,6 +71,10 @@ jobs:
           PY
 
       - name: Run tests
+        working-directory: backend
         env:
-          PYTHONPATH: .
-        run: pytest -q
+          # На CI тесты всегда гоняем на sqlite, чтобы не ходить во внешние сервисы
+          BACKEND_DATABASE_URL: "sqlite:///./data.db"
+          BACKEND_ENV: "dev"
+        run: |
+          pytest -q
