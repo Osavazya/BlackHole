@@ -16,12 +16,6 @@ jobs:
       run:
         working-directory: backend
 
-    # пробрасываем секреты/переменные в окружение job
-    env:
-      AWS_REGION: ${{ secrets.AWS_REGION }}
-      LAMBDA_FUNCTION_NAME: ${{ secrets.LAMBDA_FUNCTION_NAME }}
-      LAYER_ARN: ${{ secrets.LAYER_ARN }}
-
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -36,17 +30,31 @@ jobs:
           python -m pip install -U pip
           mkdir -p package
           pip install -r requirements.txt -t package
-          # psycopg(2/3) берём из Lambda Layer, поэтому убираем из архива
-          rm -rf package/psycopg* || true
+
+          echo "== psycopg leftovers BEFORE cleanup =="
+          ls -1 package | grep -i psycopg || true
+
+          # вычищаем все варианты psycopg/psycopg2 + их dist-info
+          find package -maxdepth 1 \
+            \( -iname 'psycopg' -o -iname 'psycopg2' \
+               -o -iname 'psycopg*' -o -iname 'psycopg2*' \
+               -o -iname '*psycopg*dist-info*' \) \
+            -print -exec rm -rf {} +
+
+          echo "== psycopg leftovers AFTER cleanup =="
+          ls -1 package | grep -i psycopg || true
 
       - name: Build ZIP (code + deps)
         run: |
           cp -R app lambda_handler.py package/
-          cd package && zip -r ../backend.zip . && cd ..
+          cd package
+          zip -r ../backend.zip .
+          cd ..
           ls -lh backend.zip
-          # safety-проверка: в zip не должно быть psycopg*
-          if unzip -l backend.zip | grep -qiE 'psycopg(|2)'; then
-            echo "Found psycopg* in zip — remove it from requirements.txt"; exit 1
+
+          # ругаемся только если в zip есть каталоги модулей psycopg/psycopg2
+          if unzip -Z1 backend.zip | grep -qiE '(^|/)(psycopg2?/)/'; then
+            echo "Found psycopg runtime package dir in zip — remove it from requirements"; exit 1
           fi
 
       - name: Configure AWS credentials
@@ -54,18 +62,22 @@ jobs:
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: ${{ env.AWS_REGION }}
+          aws-region: ${{ secrets.AWS_REGION }}
 
       - name: Update Lambda code
+        env:
+          LAMBDA_FUNCTION_NAME: ${{ secrets.LAMBDA_FUNCTION_NAME }}
         run: |
           aws lambda update-function-code \
             --function-name "$LAMBDA_FUNCTION_NAME" \
             --zip-file fileb://backend.zip
           aws lambda wait function-updated --function-name "$LAMBDA_FUNCTION_NAME"
 
-      # (опционально) зафиксировать handler/runtime/layer
       - name: Ensure handler/runtime/layer (optional)
         if: ${{ env.LAYER_ARN != '' }}
+        env:
+          LAMBDA_FUNCTION_NAME: ${{ secrets.LAMBDA_FUNCTION_NAME }}
+          LAYER_ARN: ${{ secrets.LAYER_ARN }}
         run: |
           aws lambda update-function-configuration \
             --function-name "$LAMBDA_FUNCTION_NAME" \
@@ -76,6 +88,6 @@ jobs:
 
       - name: Warm up (optional)
         run: |
-          curl -sS "https://9d8q2oy0y1.execute-api.eu-south-2.amazonaws.com/prod/ping" \
-            -H "Origin: https://app.blackhole.bond" >/dev/null || true
+          curl -sS "https://9d8q2oy0y1.execute-api.eu-south-2.amazonaws.com/prod/ping" > /dev/null || true
+
 
