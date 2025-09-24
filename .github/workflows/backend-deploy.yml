@@ -16,6 +16,12 @@ jobs:
       run:
         working-directory: backend
 
+    # пробрасываем секреты/переменные в окружение job
+    env:
+      AWS_REGION: ${{ secrets.AWS_REGION }}
+      LAMBDA_FUNCTION_NAME: ${{ secrets.LAMBDA_FUNCTION_NAME }}
+      LAYER_ARN: ${{ secrets.LAYER_ARN }}
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -24,25 +30,21 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-          cache: "pip"
-          cache-dependency-path: backend/requirements.txt
 
       - name: Install prod deps into ./package
         run: |
-          python -m pip install -U pip wheel
+          python -m pip install -U pip
           mkdir -p package
           pip install -r requirements.txt -t package
-          # safety: не тащим клиентские драйверы в zip — они едут слоем
+          # psycopg(2/3) берём из Lambda Layer, поэтому убираем из архива
           rm -rf package/psycopg* || true
 
       - name: Build ZIP (code + deps)
         run: |
           cp -R app lambda_handler.py package/
-          cd package
-          zip -r ../backend.zip .
-          cd ..
+          cd package && zip -r ../backend.zip . && cd ..
           ls -lh backend.zip
-          # sanity-check: не осталось ли psycopg* внутри архива
+          # safety-проверка: в zip не должно быть psycopg*
           if unzip -l backend.zip | grep -qiE 'psycopg(|2)'; then
             echo "Found psycopg* in zip — remove it from requirements.txt"; exit 1
           fi
@@ -52,23 +54,18 @@ jobs:
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: ${{ secrets.AWS_REGION }}
+          aws-region: ${{ env.AWS_REGION }}
 
       - name: Update Lambda code
-        env:
-          LAMBDA_FUNCTION_NAME: ${{ secrets.LAMBDA_FUNCTION_NAME }}
         run: |
           aws lambda update-function-code \
             --function-name "$LAMBDA_FUNCTION_NAME" \
             --zip-file fileb://backend.zip
           aws lambda wait function-updated --function-name "$LAMBDA_FUNCTION_NAME"
 
-      # (опционально) зафиксировать handler/runtime/layer, если нужно
+      # (опционально) зафиксировать handler/runtime/layer
       - name: Ensure handler/runtime/layer (optional)
-        if: ${{ secrets.LAYER_ARN != '' }}
-        env:
-          LAMBDA_FUNCTION_NAME: ${{ secrets.LAMBDA_FUNCTION_NAME }}
-          LAYER_ARN: ${{ secrets.LAYER_ARN }}
+        if: ${{ env.LAYER_ARN != '' }}
         run: |
           aws lambda update-function-configuration \
             --function-name "$LAMBDA_FUNCTION_NAME" \
@@ -79,4 +76,6 @@ jobs:
 
       - name: Warm up (optional)
         run: |
-          curl -sS "https://9d8q2oy0y1.execute-api.eu-south-2.amazonaws.com/prod/ping" > /dev/null || true
+          curl -sS "https://9d8q2oy0y1.execute-api.eu-south-2.amazonaws.com/prod/ping" \
+            -H "Origin: https://app.blackhole.bond" >/dev/null || true
+
