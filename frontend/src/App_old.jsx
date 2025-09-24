@@ -71,7 +71,11 @@ export default function App() {
         ))}
       </ul>
 
-      <p><a href="/" onClick={(e)=>{e.preventDefault(); load();}}>Обновить данные</a> · <a href="http://localhost:8000/docs" target="_blank" rel="noreferrer">Swagger</a></p>
+     <p>
+       <a href="/" onClick={(e)=>{e.preventDefault(); load();}}>Обновить данные</a>
+       {" · "}
+       <a href={`${API_BASE}/docs`} target="_blank" rel="noreferrer">Swagger</a>
+     </p>
     </div>
   );
 }

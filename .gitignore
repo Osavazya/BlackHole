@@ -1,30 +1,36 @@
-# Python
-backend/.venv/
+# Python (all)
 __pycache__/
 *.pyc
+*.pyo
+*.pyd
+*.egg-info/
+.venv/
+venv/
 
-# Node/React
-frontend/node_modules/
-frontend/dist/
-
-# IDE/OS
-.vscode/
-.DS_Store
+# Project build artifacts
+package/
+backend/package/
+backend.zip
+dist/
+build/
 
 # App data
+data.db
 backend/data.db
 
-
-# env files
-backend/.env
-frontend/.env
+# Env files
 .env
 .env.*
 */.env
 */.env.*
-.env
-data.db
-__pycache__/
-package/
-backend.zip
-*.pyc
+
+# IDE / OS
+.vscode/
+.DS_Store
+
+# Frontend
+frontend/node_modules/
+frontend/dist/
+
+# Cache / test
+.pytest_cache/

@@ -1,35 +1,55 @@
 # app/db.py
-from pathlib import Path
-
-from urllib.parse import urlparse
+import os
+from urllib.parse import urlparse, parse_qsl, urlencode, urlunparse
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker, DeclarativeBase
 
-from .settings import settings
+# Глобальные ссылки (ленивая инициализация)
+_engine = None
+_SessionLocal = None
 
-# 1) Берём URL из настроек (по умолчанию — sqlite:///./data.db)
-DATABASE_URL = settings.safe_database_url  # добавит sslmode=require для PG, если его нет
 
-# 2) Определяем тип БД
-parsed = urlparse(DATABASE_URL)
-is_sqlite = parsed.scheme.startswith("sqlite")
+def _normalize_url() -> str:
+    """
+    Берём URL из ENV (DATABASE_URL или BACKEND_DATABASE_URL),
+    форсим драйвер psycopg2 для Postgres и sslmode=require.
+    """
+    url = os.getenv("DATABASE_URL") or os.getenv("BACKEND_DATABASE_URL")
+    if not url:
+        return "sqlite:////tmp/app.db"
 
-# 3) Параметры движка
-engine_kwargs = {
-    "pool_pre_ping": True,  # чинит «висящие» коннекты
-}
+    # могли сохранить с одинарными кавычками — уберём
+    if url.startswith("'") and url.endswith("'"):
+        url = url[1:-1]
 
-if is_sqlite:
-    # Для SQLite (файл). Разрешаем многопоточность.
-    engine_kwargs["connect_args"] = {"check_same_thread": False}
-else:
-    # Для Postgres/др. — небольшой пул без перелива
-    engine_kwargs.update(pool_size=5, max_overflow=0)
+    p = urlparse(url)
+    if p.scheme.startswith("postgres"):
+        # форсим psycopg2 (совместимо с AWS Lambda)
+        p = p._replace(scheme="postgresql+psycopg2")
+        q = dict(parse_qsl(p.query, keep_blank_values=True))
+        q.pop("channel_binding", None)   # на всякий случай
+        q.setdefault("sslmode", "require")
+        url = urlunparse(p._replace(query=urlencode(q)))
 
-engine = create_engine(DATABASE_URL, **engine_kwargs)
+    return url
 
-SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+
+def get_engine():
+    """Ленивая сборка Engine, чтобы импорт не падал без драйвера в момент старта."""
+    global _engine, _SessionLocal
+    if _engine is None:
+        url = _normalize_url()
+        kwargs = {"pool_pre_ping": True}
+        if url.startswith("sqlite"):
+            kwargs["connect_args"] = {"check_same_thread": False}
+        else:
+            kwargs.update(pool_size=5, max_overflow=0)
+
+        _engine = create_engine(url, **kwargs)
+        _SessionLocal = sessionmaker(bind=_engine, autoflush=False, autocommit=False)
+
+    return _engine
 
 
 class Base(DeclarativeBase):
@@ -37,7 +57,11 @@ class Base(DeclarativeBase):
 
 
 def get_db():
-    db = SessionLocal()
+    """Зависимость для FastAPI роутов (если понадобится)."""
+    global _SessionLocal
+    if _SessionLocal is None:
+        get_engine()
+    db = _SessionLocal()
     try:
         yield db
     finally:
