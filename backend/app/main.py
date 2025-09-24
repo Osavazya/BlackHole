@@ -8,7 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from sqlalchemy import text
 
-from .db import Base, get_engine                 # 👈 только так
+from .db import Base, get_engine
 from .routers.blackholes import router as blackholes_router
 from .settings import settings
 
@@ -34,6 +34,7 @@ async def lifespan(app: FastAPI):
                     ON CONFLICT (id) DO NOTHING
                 """))
     except Exception:
+        # не валим приложение, если БД недоступна при старте
         pass
     yield
 
@@ -43,8 +44,8 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=ALLOWED_ORIGINS,
     allow_credentials=True,
-    allow_methods=["GET","POST","PUT","PATCH","DELETE","OPTIONS"],
-    allow_headers=["Authorization","Content-Type","Accept","X-Requested-With"],
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type", "Accept", "X-Requested-With"],
 )
 
 @app.get("/")
@@ -61,12 +62,16 @@ def version():
 
 @app.get("/ping")
 def ping(request: Request):
+    # ⬇️ тест ждёт именно эти поля
     return JSONResponse(
-        {"ok": True, "ts": datetime.utcnow().isoformat() + "Z"},
+        {
+            "status": "ok",
+            "message": "pong",
+            "ts": datetime.utcnow().isoformat() + "Z",
+        },
         headers={"X-Debug-Handler": "fastapi"},
     )
 
-# Диагностика БД
 @app.get("/db-ping")
 def db_ping():
     engine = get_engine()
