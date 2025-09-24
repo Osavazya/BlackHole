@@ -8,7 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from sqlalchemy import text
 
-from .db import Base, get_engine                 # 👈 только так
+from .db import Base, get_engine
 from .routers.blackholes import router as blackholes_router
 from .settings import settings
 
@@ -17,6 +17,7 @@ ALLOWED_ORIGINS = settings.allowed_origins or [
     "http://localhost:5173",
     "http://localhost:8000",
 ]
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -34,8 +35,10 @@ async def lifespan(app: FastAPI):
                     ON CONFLICT (id) DO NOTHING
                 """))
     except Exception:
+        # на старте БД может быть недоступна — сид пропускаем
         pass
     yield
+
 
 app = FastAPI(title="BlackHole API", lifespan=lifespan)
 
@@ -43,28 +46,38 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=ALLOWED_ORIGINS,
     allow_credentials=True,
-    allow_methods=["GET","POST","PUT","PATCH","DELETE","OPTIONS"],
-    allow_headers=["Authorization","Content-Type","Accept","X-Requested-With"],
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type", "Accept", "X-Requested-With"],
 )
+
 
 @app.get("/")
 def root():
     return {"message": "Добро пожаловать в проект BlackHole 🚀"}
 
+
 @app.get("/health")
 def health():
     return {"status": "ok"}
+
 
 @app.get("/version")
 def version():
     return {"version": "0.1.0"}
 
+
 @app.get("/ping")
 def ping(request: Request):
+    # КЛЮЧЕВОЕ: тест ждёт поле "status": "ok"
     return JSONResponse(
-        {"ok": True, "ts": datetime.utcnow().isoformat() + "Z"},
+        {
+            "status": "ok",
+            "ok": True,
+            "ts": datetime.utcnow().isoformat() + "Z",
+        },
         headers={"X-Debug-Handler": "fastapi"},
     )
+
 
 # Диагностика БД
 @app.get("/db-ping")
@@ -77,5 +90,6 @@ def db_ping():
         return {"db": "ok", "select1": one, "driver": driver}
     except Exception as e:
         return JSONResponse({"db": "error", "driver": driver, "error": str(e)}, status_code=500)
+
 
 app.include_router(blackholes_router)
