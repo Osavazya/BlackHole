@@ -2,12 +2,14 @@ name: backend-tests
 
 on:
   push:
+    branches: [ main ]
     paths:
       - 'backend/**'
       - '.github/workflows/backend-tests.yml'
+      - 'requirements*.txt'
+      - 'pyproject.toml'
   pull_request:
-    paths:
-      - 'backend/**'
+    branches: [ main ]    # <-- запускаем на любом PR в main
   workflow_dispatch: {}
 
 jobs:
@@ -70,4 +72,3 @@ jobs:
             backend/coverage.xml
             backend/.coverage
             backend/pytest-report.xml
-

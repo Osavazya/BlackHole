@@ -8,7 +8,6 @@ on:
       - '.github/workflows/backend-deploy.yml'
   workflow_dispatch:
 
-# вход в AWS через OIDC (без ACCESS_KEY/SECRET)
 permissions:
   id-token: write
   contents: read
@@ -44,20 +43,18 @@ jobs:
         with:
           python-version: '3.12'
 
-      # ==== DEBUG OIDC — временно, чтобы увидеть точные клеймы ====
       - name: Show OIDC claims (debug)
         uses: actions/github-script@v7
         with:
           script: |
-            const core = require('@actions/core');
             const idToken = await core.getIDToken('sts.amazonaws.com');
-            const payload = JSON.parse(Buffer.from(idToken.split('.')[1], 'base64').toString());
+            const [, payloadB64] = idToken.split('.');
+            const payload = JSON.parse(Buffer.from(payloadB64, 'base64').toString());
             console.log('OIDC sub =', payload.sub);
             console.log('OIDC repository =', payload.repository);
             console.log('OIDC repository_owner =', payload.repository_owner);
             console.log('GITHUB_REF =', process.env.GITHUB_REF);
             console.log('GITHUB_EVENT_NAME =', process.env.GITHUB_EVENT_NAME);
-      # ====================================================================
 
       - name: Configure AWS credentials (OIDC)
         uses: aws-actions/configure-aws-credentials@v4
@@ -129,4 +126,3 @@ jobs:
         run: |
           curl -sS "https://9d8q2oy0y1.execute-api.eu-south-2.amazonaws.com/prod/ping" \
             -H "Origin: https://app.blackhole.bond" >/dev/null || true
-
