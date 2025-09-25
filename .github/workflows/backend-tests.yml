@@ -6,7 +6,8 @@ on:
       - 'backend/**'
       - '.github/workflows/backend-tests.yml'
   pull_request:
-    paths: ['backend/**']
+    paths:
+      - 'backend/**'
   workflow_dispatch: {}
 
 jobs:
