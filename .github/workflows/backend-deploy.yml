@@ -4,19 +4,32 @@ on:
   push:
     branches: [ main ]
     paths:
-      - "backend/**"
-      - ".github/workflows/backend-deploy.yml"
+      - 'backend/**'
+      - '.github/workflows/backend-deploy.yml'
   workflow_dispatch:
+
+# OIDC для входа в AWS (никаких ACCESS_KEY/SECRET)
+permissions:
+  id-token: write
+  contents: read
 
 jobs:
   deploy:
     name: Build & Deploy
     runs-on: ubuntu-latest
+
+    # окружение прод + защита от параллельных релизов
+    environment:
+      name: prod
+      url: https://api.blackhole.bond
+    concurrency:
+      group: prod-backend
+      cancel-in-progress: false
+
     defaults:
       run:
         working-directory: backend
 
-    # секреты в окружении job
     env:
       AWS_REGION: ${{ secrets.AWS_REGION }}
       LAMBDA_FUNCTION_NAME: ${{ secrets.LAMBDA_FUNCTION_NAME }}
@@ -29,7 +42,13 @@ jobs:
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version: '3.12'
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}  # см. заметки ниже
+          aws-region: ${{ env.AWS_REGION }}
 
       - name: Install prod deps into ./package
         run: |
@@ -40,7 +59,7 @@ jobs:
           echo "== psycopg leftovers BEFORE cleanup =="
           ls -1 package | grep -i psycopg || true
 
-          # убираем любые варианты psycopg/psycopg2 и их dist-info из архива
+          # вычищаем psycopg/psycopg2 из архива (ты используешь Layer)
           find package -maxdepth 1 \
             \( -iname 'psycopg' -o -iname 'psycopg2' \
                -o -iname 'psycopg*' -o -iname 'psycopg2*' \
@@ -61,25 +80,26 @@ jobs:
             echo "Found psycopg runtime package dir in zip — remove it from requirements"; exit 1
           fi
 
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: ${{ env.AWS_REGION }}
-
-      # полезно один раз проверить, под кем идёт раннер
       - name: Who am I
         run: aws sts get-caller-identity
 
-      - name: Update Lambda code
+      - name: Update Lambda code (publish new version)
         run: |
-          aws lambda update-function-code \
+          VERSION=$(aws lambda update-function-code \
             --function-name "$LAMBDA_FUNCTION_NAME" \
-            --zip-file fileb://backend.zip
+            --zip-file fileb://backend.zip \
+            --publish \
+            --query 'Version' --output text)
           aws lambda wait function-updated --function-name "$LAMBDA_FUNCTION_NAME"
+          echo "Published version: $VERSION"
+          echo "VERSION=$VERSION" >> $GITHUB_ENV
 
-      # (опционально) зафиксировать handler/runtime/layer
+      - name: Point alias 'prod' to new version (safe rollback ready)
+        run: |
+          aws lambda get-alias --function-name "$LAMBDA_FUNCTION_NAME" --name prod >/dev/null 2>&1 \
+            && aws lambda update-alias --function-name "$LAMBDA_FUNCTION_NAME" --name prod --function-version "$VERSION" \
+            || aws lambda create-alias --function-name "$LAMBDA_FUNCTION_NAME" --name prod --function-version "$VERSION"
+
       - name: Ensure handler/runtime/layer (optional)
         if: ${{ env.LAYER_ARN != '' }}
         run: |
