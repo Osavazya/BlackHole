@@ -44,7 +44,7 @@ jobs:
         with:
           python-version: '3.12'
 
-      # ===== OIDC debug без github-script (печатает клеймы) =====
+      # Debug OIDC без github-script — просто печатаем клеймы
       - name: Show OIDC claims (debug)
         shell: bash
         run: |
@@ -60,7 +60,6 @@ jobs:
           print('GITHUB_REF =', os.environ.get('GITHUB_REF'))
           print('GITHUB_EVENT_NAME =', os.environ.get('GITHUB_EVENT_NAME'))
           PY
-      # =========================================================
 
       - name: Configure AWS credentials (OIDC)
         uses: aws-actions/configure-aws-credentials@v4
@@ -126,3 +125,4 @@ jobs:
         run: |
           curl -sS "https://9d8q2oy0y1.execute-api.eu-south-2.amazonaws.com/prod/ping" \
             -H "Origin: https://app.blackhole.bond" >/dev/null || true
+

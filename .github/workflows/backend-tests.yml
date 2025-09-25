@@ -2,14 +2,15 @@ name: backend-tests
 
 on:
   push:
-    branches: [ main ]
     paths:
       - 'backend/**'
       - '.github/workflows/backend-tests.yml'
       - 'requirements*.txt'
       - 'pyproject.toml'
   pull_request:
-    branches: [ main ]    # <-- запускаем на любом PR в main
+    branches: [ main ]
+    paths:
+      - 'backend/**'
   workflow_dispatch: {}
 
 jobs:
