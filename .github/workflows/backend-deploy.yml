@@ -8,7 +8,7 @@ on:
       - '.github/workflows/backend-deploy.yml'
   workflow_dispatch:
 
-# OIDC для входа в AWS (никаких ACCESS_KEY/SECRET)
+# вход в AWS через OIDC (без ACCESS_KEY/SECRET)
 permissions:
   id-token: write
   contents: read
@@ -18,10 +18,10 @@ jobs:
     name: Build & Deploy
     runs-on: ubuntu-latest
 
-    # окружение прод + защита от параллельных релизов
     environment:
       name: prod
       url: https://api.blackhole.bond
+
     concurrency:
       group: prod-backend
       cancel-in-progress: false
@@ -44,10 +44,25 @@ jobs:
         with:
           python-version: '3.12'
 
+      # ==== DEBUG OIDC — оставь временно, чтобы увидеть точные клеймы ====
+      - name: Show OIDC claims (debug)
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const core = require('@actions/core');
+            const idToken = await core.getIDToken('sts.amazonaws.com');
+            const payload = JSON.parse(Buffer.from(idToken.split('.')[1], 'base64').toString());
+            console.log('OIDC sub =', payload.sub);
+            console.log('OIDC repository =', payload.repository);
+            console.log('OIDC repository_owner =', payload.repository_owner);
+            console.log('GITHUB_REF =', process.env.GITHUB_REF);
+            console.log('GITHUB_EVENT_NAME =', process.env.GITHUB_EVENT_NAME);
+      # ====================================================================
+
       - name: Configure AWS credentials (OIDC)
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}  # см. заметки ниже
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
 
       - name: Install prod deps into ./package
@@ -59,7 +74,7 @@ jobs:
           echo "== psycopg leftovers BEFORE cleanup =="
           ls -1 package | grep -i psycopg || true
 
-          # вычищаем psycopg/psycopg2 из архива (ты используешь Layer)
+          # вычищаем psycopg/psycopg2 из архива (используешь Layer)
           find package -maxdepth 1 \
             \( -iname 'psycopg' -o -iname 'psycopg2' \
                -o -iname 'psycopg*' -o -iname 'psycopg2*' \
