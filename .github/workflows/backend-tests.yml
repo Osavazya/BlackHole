@@ -5,7 +5,10 @@ on:
     paths:
       - 'backend/**'
       - '.github/workflows/backend-tests.yml'
+      - 'requirements*.txt'
+      - 'pyproject.toml'
   pull_request:
+    branches: [ main ]
     paths:
       - 'backend/**'
   workflow_dispatch: {}
@@ -70,4 +73,3 @@ jobs:
             backend/coverage.xml
             backend/.coverage
             backend/pytest-report.xml
-
