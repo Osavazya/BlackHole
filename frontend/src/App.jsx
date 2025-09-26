@@ -1,12 +1,14 @@
 import React, { useState } from "react";
-import "./App.css";
+import "./styles.css";                       // <-- важно: подключаем ЭТОТ css
 import PingButton from "./components/PingButton";
+import VideoBackground from "./components/VideoBackground.jsx";
 
+// id: sgra / m87 / cygx1
 const BH = [
   {
-    id: "sgrA",
+    id: "sgra",
     name: "Стрелец A* (Sagittarius A*)",
-    img: new URL("./assets/sagittariusA.jpg", import.meta.url).href,
+    img: new URL("./assets/sagittariusA.jpg", import.meta.url).href, // больше не используется
     distance_ly: 26000,
     mass_solar: 4.3e6,
     description:
@@ -16,7 +18,7 @@ const BH = [
     id: "m87",
     name: "M87*",
     img: new URL("./assets/m87.jpg", import.meta.url).href,
-    distance_ly: 53000000,
+    distance_ly: 53_000_000,
     mass_solar: 6.5e9,
     description:
       "Сверхмассивая чёрная дыра в эллиптической галактике M87. Первая сфотографированная непосредственно (коллаборация Event Horizon Telescope, 2019). Известна гигантской релятивистской струёй (джетом)."
@@ -33,15 +35,18 @@ const BH = [
 ];
 
 export default function App() {
-  const [current, setCurrent] = useState(BH[0].id);
-  const selected = BH.find((b) => b.id === current);
+  const [current, setCurrent] = useState("sgra");
+  const selected = BH.find((b) => b.id === current) ?? BH[0];
 
   return (
-    <div>
-      <div className="header">
-        <h1>Black Holes</h1>
-        <div className="spacer" />
+    <div className="page">
+      {/* Фоновое видео */}
+      <VideoBackground which={current} />
 
+      {/* Верхняя панель */}
+      <div className="header">
+        <h1 style={{margin:0, fontSize:18, fontWeight:600}}>Black Holes</h1>
+        <div className="spacer" />
         {BH.map((b) => (
           <button
             key={b.id}
@@ -52,22 +57,18 @@ export default function App() {
             {b.name.split(" (")[0]}
           </button>
         ))}
-
-        {/* Кнопка пинга API */}
-        <div style={{ marginLeft: "1rem" }}>
+        <div style={{ marginLeft: 12 }}>
           <PingButton />
         </div>
       </div>
 
+      {/* Текстовая карточка внизу */}
       <section className="hero" role="region" aria-label={selected.name}>
-        <img src={selected.img} alt={selected.name} />
         <div className="panel">
           <h2 className="title">{selected.name}</h2>
           <div className="meta">
             {selected.distance_ly && (
-              <>
-                Расстояние: {selected.distance_ly.toLocaleString("ru-RU")} св. лет ·{" "}
-              </>
+              <>Расстояние: {selected.distance_ly.toLocaleString("ru-RU")} св. лет · </>
             )}
             {selected.mass_solar && <>Масса: {selected.mass_solar.toLocaleString("ru-RU")} M☉</>}
           </div>
@@ -76,13 +77,7 @@ export default function App() {
       </section>
 
       <footer
-        style={{
-          position: "fixed",
-          bottom: 5,
-          right: 10,
-          color: "gray",
-          fontSize: "12px"
-        }}
+        style={{ position: "fixed", bottom: 5, right: 10, color: "gray", fontSize: 12 }}
       >
         Black Hole Gallery v0.1.1
       </footer>

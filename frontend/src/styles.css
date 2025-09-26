@@ -1,0 +1,83 @@
+:root { color-scheme: dark; }
+* { box-sizing: border-box; }
+
+html, body, #root { height: 100%; }
+body {
+  margin: 0;
+  font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
+  background:#000; color:#fff;
+}
+
+/* страница */
+.page {
+  position: relative;
+  min-height: 100vh;      /* важно: на высоту вьюпорта */
+  overflow: hidden;       /* чтобы фоновое видео не давало скролл */
+}
+
+/* ===== ФОНОВОЕ ВИДЕО ===== */
+.video-bg {
+  position: fixed;
+  inset: 0;
+  z-index: 0;             /* видео под контентом */
+}
+.video-bg__video {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;      /* заполнить экран, лишнее обрезать */
+  filter: brightness(0.7) contrast(1.05) saturate(1.05);
+}
+.video-bg__overlay {
+  position: absolute;
+  inset: 0;
+  /* мягкое затемнение, чтобы текст читался */
+  background:
+    radial-gradient(ellipse at 60% 45%, transparent 0 55%, rgba(0,0,0,.55) 75%, rgba(0,0,0,.85) 100%),
+    linear-gradient(180deg, rgba(0,0,0,.15) 0%, rgba(0,0,0,.55) 65%, #000 100%);
+}
+
+/* ===== ВЕРХНЯЯ ПАНЕЛЬ ===== */
+.header {
+  position: fixed;
+  top: 14px; left: 14px; right: 14px;
+  display: flex; gap: 8px; align-items: center;
+  z-index: 2;
+  background: rgba(0,0,0,.4);
+  backdrop-filter: blur(6px);
+  padding: 8px 12px;
+  border-radius: 12px;
+  border: 1px solid rgba(255,255,255,.18);
+}
+.spacer { flex: 1; }
+
+.btn {
+  border:1px solid rgba(255,255,255,.35);
+  background: rgba(0,0,0,.35);
+  color:#fff; padding:8px 12px; border-radius:10px; cursor:pointer;
+  backdrop-filter: blur(6px);
+}
+.btn.active { background: rgba(255,255,255,.14); border-color: rgba(255,255,255,.6); }
+
+/* ===== НИЖНЯЯ КАРТОЧКА (текст) ===== */
+.hero {
+  min-height: 100vh;
+  display: flex;
+  align-items: flex-end;
+  /* отступ сверху, чтобы контент не лез под fixed-header */
+  padding: 80px 20px 24px;
+}
+.panel {
+  z-index: 2;
+  max-width: 880px;
+  padding: 16px 20px;
+  background: rgba(0,0,0,.45);
+  border: 1px solid rgba(255,255,255,.25);
+  border-radius: 14px;
+  backdrop-filter: blur(8px);
+}
+
+.title { margin:0 0 6px; }
+.meta  { margin:0 0 10px; opacity:.9; }
+.desc  { margin:0; line-height:1.5; opacity:.95; }
