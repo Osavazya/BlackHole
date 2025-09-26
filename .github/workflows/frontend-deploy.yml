@@ -1,12 +1,17 @@
-name: Frontend Deploy
+name: Frontend Deploy (versioned)
 
 on:
   push:
-    branches: [ main ]                 # деплоим после merge в main
+    branches: [ main ]
     paths:
-      - "frontend/**"
-
+      - 'frontend/**'
+      - '.github/workflows/frontend-deploy.yml'
   workflow_dispatch:
+    inputs:
+      sha:
+        description: 'Release SHA to promote (rollback)'
+        required: false
+        default: ''
 
 concurrency:
   group: frontend-deploy
@@ -14,6 +19,7 @@ concurrency:
 
 jobs:
   deploy:
+    if: github.event_name == 'push'
     runs-on: ubuntu-latest
 
     steps:
@@ -31,11 +37,12 @@ jobs:
         working-directory: frontend
         run: npm ci
 
-      - name: Build (VITE_API_URL из секретов)
+      # важный момент: base указываем на releases/<sha> чтобы index.html ссылался на правильные пути
+      - name: Build (VITE_API_URL from secrets)
         working-directory: frontend
         env:
           VITE_API_URL: ${{ secrets.VITE_API_URL }}
-        run: npm run build
+        run: npm run build -- --base=/releases/${{ github.sha }}/
 
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
@@ -44,20 +51,57 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region:            ${{ secrets.AWS_REGION }}
 
-      - name: Upload static assets (long cache)
+      # грузим весь билд в releases/<sha> с длинным кешем
+      - name: Upload build to S3 (versioned path)
         run: |
-          aws s3 sync frontend/dist/ s3://${{ secrets.S3_BUCKET }} --delete \
-            --exclude index.html \
+          aws s3 sync frontend/dist/ s3://${{ secrets.S3_BUCKET }}/releases/${{ github.sha }}/ \
+            --delete \
             --cache-control "public,max-age=31536000,immutable"
 
-      - name: Upload index.html (no-cache)
+      # кладём метку latest.txt — удобно видеть текущий релиз
+      - name: Write latest pointer
         run: |
-          aws s3 cp frontend/dist/index.html s3://${{ secrets.S3_BUCKET }}/index.html \
-            --cache-control "no-cache, no-store, must-revalidate" \
-            --content-type "text/html"
+          echo "${{ github.sha }}" > latest.txt
+          aws s3 cp latest.txt s3://${{ secrets.S3_BUCKET }}/releases/latest.txt \
+            --cache-control "no-cache, no-store, must-revalidate"
 
-      - name: Invalidate index.html
+      # ПРОМОУШЕН: делаем этот релиз "текущим" — копируем его index.html в корень бакета
+      - name: Promote this release to root
         run: |
+          aws s3 cp s3://${{ secrets.S3_BUCKET }}/releases/${{ github.sha }}/index.html \
+                   s3://${{ secrets.S3_BUCKET }}/index.html \
+                   --cache-control "no-cache, no-store, must-revalidate" \
+                   --content-type "text/html"
+
+      - name: Invalidate CloudFront (index only)
+        run: |
+          aws cloudfront create-invalidation \
+            --distribution-id ${{ secrets.CLOUDFRONT_DISTRIBUTION_ID }} \
+            --paths "/index.html"
+
+  promote:
+    # ручной откат/промо любого sha: Actions → Run workflow → вбей нужный SHA
+    if: github.event_name == 'workflow_dispatch' && github.event.inputs.sha != ''
+    runs-on: ubuntu-latest
+    steps:
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id:     ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region:            ${{ secrets.AWS_REGION }}
+
+      - name: Promote provided SHA to root (rollback)
+        run: |
+          SHA="${{ github.event.inputs.sha }}"
+          echo "Promoting SHA=$SHA"
+          aws s3 cp s3://${{ secrets.S3_BUCKET }}/releases/${SHA}/index.html \
+                   s3://${{ secrets.S3_BUCKET }}/index.html \
+                   --cache-control "no-cache, no-store, must-revalidate" \
+                   --content-type "text/html"
+          echo "$SHA" > latest.txt
+          aws s3 cp latest.txt s3://${{ secrets.S3_BUCKET }}/releases/latest.txt \
+            --cache-control "no-cache, no-store, must-revalidate"
           aws cloudfront create-invalidation \
             --distribution-id ${{ secrets.CLOUDFRONT_DISTRIBUTION_ID }} \
             --paths "/index.html"
