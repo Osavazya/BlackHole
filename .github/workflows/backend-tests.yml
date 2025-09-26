@@ -8,9 +8,7 @@ on:
       - 'requirements*.txt'
       - 'pyproject.toml'
   pull_request:
-    branches: [ main ]
-    paths:
-      - 'backend/**'
+    branches: [ main ]       # без paths — чтобы чеки всегда появлялись на PR
   workflow_dispatch: {}
 
 jobs:
@@ -21,6 +19,7 @@ jobs:
       matrix:
         python-version: ['3.11', '3.12']
 
+    # По умолчанию работаем в папке backend (кроме шага diff)
     defaults:
       run:
         working-directory: backend
@@ -29,13 +28,33 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      # Для PR: определяем, менялся ли backend по сравнению с базовой веткой.
+      # Для push: считаем, что менялся (запуск сюда и так пришёл через paths:)
+      - name: Detect backend changes
+        id: ch
+        working-directory: .   # git diff по путям из корня
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            git fetch --no-tags --prune --depth=2 origin +refs/heads/${{ github.base_ref }}:refs/remotes/origin/${{ github.base_ref }} || true
+            if git diff --name-only origin/${{ github.base_ref }}...HEAD | grep -E '^(backend/|requirements.*\.txt|pyproject\.toml)'; then
+              echo "changed=true"  >> "$GITHUB_OUTPUT"
+            else
+              echo "changed=false" >> "$GITHUB_OUTPUT"
+            fi
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+          echo "event=${{ github.event_name }}" >> "$GITHUB_OUTPUT"
+
       - name: Set up Python
+        if: steps.ch.outputs.changed == 'true'
         uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
           cache: pip
 
       - name: Install deps
+        if: steps.ch.outputs.changed == 'true'
         run: |
           python -m pip install --upgrade pip
           if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
@@ -43,6 +62,7 @@ jobs:
           pip install pytest pytest-cov httpx coverage
 
       - name: Run tests (with coverage)
+        if: steps.ch.outputs.changed == 'true'
         run: |
           pytest tests \
             -q --maxfail=1 --disable-warnings \
@@ -51,7 +71,7 @@ jobs:
             --junitxml=pytest-report.xml
 
       - name: Add coverage to job summary
-        if: always()
+        if: steps.ch.outputs.changed == 'true'
         run: |
           python - <<'PY'
           import os, xml.etree.ElementTree as ET
@@ -61,11 +81,11 @@ jobs:
           except Exception as e:
               print("No coverage.xml or parse error:", e)
           with open(os.environ['GITHUB_STEP_SUMMARY'],'a', encoding='utf-8') as f:
-              f.write(f"### Python ${{ matrix.python-version }} coverage: {rate:.1f}%\n")
+              f.write(f"### Python ${{ '${{ matrix.python-version }}' }} coverage: {rate:.1f}%\n")
           PY
 
       - name: Upload test artifacts
-        if: always()
+        if: steps.ch.outputs.changed == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: backend-artifacts-py${{ matrix.python-version }}
@@ -73,3 +93,7 @@ jobs:
             backend/coverage.xml
             backend/.coverage
             backend/pytest-report.xml
+
+      - name: Skip (backend unchanged)
+        if: steps.ch.outputs.changed != 'true'
+        run: echo "Backend not changed in PR. Skipping tests so required checks pass."
