@@ -1,0 +1,79 @@
+name: Frontend Rollback
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "Rollback mode"
+        type: choice
+        options: [previous, sha]
+        default: previous
+        required: true
+      sha:
+        description: "Target SHA (when mode=sha)"
+        required: false
+
+jobs:
+  rollback:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id:     ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region:            ${{ secrets.AWS_REGION }}
+
+      - name: Resolve target SHA
+        id: pick
+        env:
+          BUCKET: ${{ secrets.S3_BUCKET }}
+          MODE:   ${{ inputs.mode }}
+          SHA_IN: ${{ inputs.sha }}
+        run: |
+          set -e
+          if [ "$MODE" = "sha" ] && [ -n "$SHA_IN" ]; then
+            echo "sha=$SHA_IN" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          tmp=$(mktemp)
+          aws s3 cp "s3://$BUCKET/releases/history.txt" "$tmp" >/dev/null
+          lines=$(wc -l < "$tmp" | tr -d ' ')
+          if [ "$lines" -lt 2 ]; then
+            echo "Not enough history to rollback" >&2
+            exit 1
+          fi
+          prev=$(tail -n 2 "$tmp" | head -n 1 | awk '{print $NF}')
+          echo "sha=$prev" >> $GITHUB_OUTPUT
+          echo "$tmp" > history_path.txt
+
+      - name: Promote selected release
+        env:
+          BUCKET: ${{ secrets.S3_BUCKET }}
+          SHA:    ${{ steps.pick.outputs.sha }}
+        run: |
+          set -e
+          aws s3 cp "s3://$BUCKET/releases/$SHA/" "s3://$BUCKET/" --recursive
+          aws s3 cp "s3://$BUCKET/releases/$SHA/index.html" "s3://$BUCKET/index.html" \
+            --cache-control "no-cache, no-store, must-revalidate" \
+            --content-type "text/html"
+          echo "$SHA" | aws s3 cp - "s3://$BUCKET/releases/latest.txt"
+
+      - name: Update history (pop last line when previous)
+        if: ${{ inputs.mode == 'previous' }}
+        env:
+          BUCKET: ${{ secrets.S3_BUCKET }}
+        run: |
+          tmp=$(cat history_path.txt)
+          # удалить последнюю строку (текущий релиз), чтоб ещё раз можно было откатываться назад
+          head -n -1 "$tmp" > "$tmp.new"
+          aws s3 cp "$tmp.new" "s3://$BUCKET/releases/history.txt"
+
+      - name: Invalidate CloudFront
+        env:
+          DIST: ${{ secrets.CLOUDFRONT_DISTRIBUTION_ID }}
+        run: |
+          aws cloudfront create-invalidation \
+            --distribution-id "$DIST" \
+            --paths "/index.html" "/assets/*" "/media/*"
