@@ -1,4 +1,4 @@
-name: Frontend Deploy (one-button)
+name: Frontend Deploy
 
 on:
   push:
@@ -8,42 +8,20 @@ on:
       - ".github/workflows/frontend-deploy.yml"
   workflow_dispatch:
     inputs:
-      action:
-        description: "What to do?"
-        required: true
-        type: choice
-        options: [deploy-now, promote-latest, promote-sha]
-        default: deploy-now
       branch:
-        description: "Branch to build (deploy-now)"
+        description: "Branch to build"
         required: false
         default: main
-      release_sha:
-        description: "SHA to promote (promote-sha)"
-        required: false
-        type: string
-
-concurrency:
-  group: frontend-deploy
-  cancel-in-progress: true
-
-env:
-  BUCKET: ${{ secrets.S3_BUCKET }}
-  CF_DISTR_ID: ${{ secrets.CLOUDFRONT_DISTRIBUTION_ID }}
 
 jobs:
   deploy:
-    name: deploy
-    # запускаем либо от push (main + изменения фронта), либо вручную с action=deploy-now
-    if: ${{ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.action == 'deploy-now') }}
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          # при ручном запуске можно выбрать ветку
-          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.branch || github.ref }}
+          ref: ${{ inputs.branch || 'main' }}
 
       - name: Setup Node
         uses: actions/setup-node@v4
@@ -62,10 +40,6 @@ jobs:
           VITE_API_URL: ${{ secrets.VITE_API_URL }}
         run: npm run build
 
-      - name: Compute release SHA
-        id: sha
-        run: echo "sha=$(git rev-parse HEAD)" >> $GITHUB_OUTPUT
-
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
@@ -73,84 +47,37 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region:            ${{ secrets.AWS_REGION }}
 
-      # 1) кладём билд в версионированную папку releases/<sha>
-      - name: Upload static assets to versioned release (long cache)
+      - name: Upload build to S3 releases/<sha>
+        env:
+          BUCKET: ${{ secrets.S3_BUCKET }}
         run: |
-          aws s3 sync frontend/dist/ "s3://${BUCKET}/releases/${{ steps.sha.outputs.sha }}/" \
-            --delete --exclude "index.html" \
-            --cache-control "public,max-age=31536000,immutable"
+          aws s3 cp frontend/dist "s3://$BUCKET/releases/${GITHUB_SHA}/" --recursive
 
-      - name: Upload index.html to versioned release (no cache)
+      - name: Promote release to root
+        env:
+          BUCKET: ${{ secrets.S3_BUCKET }}
         run: |
-          aws s3 cp frontend/dist/index.html "s3://${BUCKET}/releases/${{ steps.sha.outputs.sha }}/index.html" \
+          aws s3 cp "s3://$BUCKET/releases/${GITHUB_SHA}/" "s3://$BUCKET/" --recursive
+          aws s3 cp "s3://$BUCKET/releases/${GITHUB_SHA}/index.html" "s3://$BUCKET/index.html" \
             --cache-control "no-cache, no-store, must-revalidate" \
             --content-type "text/html"
+          echo "${GITHUB_SHA}" | aws s3 cp - "s3://$BUCKET/releases/latest.txt"
 
-      # 2) сразу промоутим в корень (прод)
-      - name: Promote version to root (sync all except index.html)
+      - name: Append history
+        env:
+          BUCKET: ${{ secrets.S3_BUCKET }}
         run: |
-          aws s3 sync "s3://${BUCKET}/releases/${{ steps.sha.outputs.sha }}/" "s3://${BUCKET}/" \
-            --delete --exclude "index.html" \
-            --cache-control "public,max-age=31536000,immutable"
-          aws s3 cp "s3://${BUCKET}/releases/${{ steps.sha.outputs.sha }}/index.html" "s3://${BUCKET}/index.html" \
-            --cache-control "no-cache, no-store, must-revalidate" \
-            --content-type "text/html"
+          set -e
+          tmp=$(mktemp)
+          aws s3 cp "s3://$BUCKET/releases/history.txt" "$tmp" 2>/dev/null || true
+          echo "$(date -u +%FT%TZ)  ${GITHUB_SHA}" >> "$tmp"
+          aws s3 cp "$tmp" "s3://$BUCKET/releases/history.txt"
+          rm -f "$tmp"
 
-      - name: Invalidate CloudFront (index.html)
+      - name: Invalidate CloudFront
+        env:
+          DIST: ${{ secrets.CLOUDFRONT_DISTRIBUTION_ID }}
         run: |
           aws cloudfront create-invalidation \
-            --distribution-id "${CF_DISTR_ID}" \
-            --paths "/index.html"
-
-  promote:
-    name: promote
-    # ручной запуск: promote-latest или promote-sha
-    if: ${{ github.event_name == 'workflow_dispatch' && (inputs.action == 'promote-latest' || inputs.action == 'promote-sha') }}
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          aws-access-key-id:     ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region:            ${{ secrets.AWS_REGION }}
-
-      - name: Find latest release SHA (if needed)
-        id: latest
-        run: |
-          key=$(aws s3api list-objects-v2 \
-            --bucket "${BUCKET}" \
-            --prefix "releases/" \
-            --query "reverse(sort_by(Contents[?ends_with(Key, 'index.html')], &LastModified))[0].Key" \
-            --output text)
-          if [ "$key" = "None" ] || [ -z "$key" ]; then
-            echo "No releases found in s3://${BUCKET}/releases/" >&2
-            exit 1
-          fi
-          sha=$(basename "$(dirname "$key")")
-          echo "sha=$sha" >> $GITHUB_OUTPUT
-
-      - name: Choose SHA to promote
-        id: choose
-        run: |
-          if [ -n "${{ inputs.release_sha }}" ]; then
-            echo "sha=${{ inputs.release_sha }}" >> $GITHUB_OUTPUT
-          else
-            echo "sha=${{ steps.latest.outputs.sha }}" >> $GITHUB_OUTPUT
-          fi
-
-      - name: Promote version to root (sync all except index.html)
-        run: |
-          aws s3 sync "s3://${BUCKET}/releases/${{ steps.choose.outputs.sha }}/" "s3://${BUCKET}/" \
-            --delete --exclude "index.html" \
-            --cache-control "public,max-age=31536000,immutable"
-          aws s3 cp "s3://${BUCKET}/releases/${{ steps.choose.outputs.sha }}/index.html" "s3://${BUCKET}/index.html" \
-            --cache-control "no-cache, no-store, must-revalidate" \
-            --content-type "text/html"
-
-      - name: Invalidate CloudFront (index.html)
-        run: |
-          aws cloudfront create-invalidation \
-            --distribution-id "${CF_DISTR_ID}" \
-            --paths "/index.html"
+            --distribution-id "$DIST" \
+            --paths "/index.html" "/assets/*" "/media/*"
