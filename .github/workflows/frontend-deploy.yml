@@ -1,30 +1,49 @@
-name: Frontend Deploy (versioned)
+name: Frontend Deploy (one-button)
 
 on:
   push:
     branches: [ main ]
     paths:
-      - 'frontend/**'
-      - '.github/workflows/frontend-deploy.yml'
+      - "frontend/**"
+      - ".github/workflows/frontend-deploy.yml"
   workflow_dispatch:
     inputs:
-      sha:
-        description: 'Release SHA to promote (rollback)'
+      action:
+        description: "What to do?"
+        required: true
+        type: choice
+        options: [deploy-now, promote-latest, promote-sha]
+        default: deploy-now
+      branch:
+        description: "Branch to build (deploy-now)"
         required: false
-        default: ''
+        default: main
+      release_sha:
+        description: "SHA to promote (promote-sha)"
+        required: false
+        type: string
 
 concurrency:
   group: frontend-deploy
   cancel-in-progress: true
 
+env:
+  BUCKET: ${{ secrets.S3_BUCKET }}
+  CF_DISTR_ID: ${{ secrets.CLOUDFRONT_DISTRIBUTION_ID }}
+
 jobs:
   deploy:
-    if: github.event_name == 'push'
+    name: deploy
+    # запускаем либо от push (main + изменения фронта), либо вручную с action=deploy-now
+    if: ${{ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.action == 'deploy-now') }}
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          # при ручном запуске можно выбрать ветку
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.branch || github.ref }}
 
       - name: Setup Node
         uses: actions/setup-node@v4
@@ -37,12 +56,15 @@ jobs:
         working-directory: frontend
         run: npm ci
 
-      # важный момент: base указываем на releases/<sha> чтобы index.html ссылался на правильные пути
-      - name: Build (VITE_API_URL from secrets)
+      - name: Build
         working-directory: frontend
         env:
           VITE_API_URL: ${{ secrets.VITE_API_URL }}
-        run: npm run build -- --base=/releases/${{ github.sha }}/
+        run: npm run build
+
+      - name: Compute release SHA
+        id: sha
+        run: echo "sha=$(git rev-parse HEAD)" >> $GITHUB_OUTPUT
 
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
@@ -51,38 +73,41 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region:            ${{ secrets.AWS_REGION }}
 
-      # грузим весь билд в releases/<sha> с длинным кешем
-      - name: Upload build to S3 (versioned path)
+      # 1) кладём билд в версионированную папку releases/<sha>
+      - name: Upload static assets to versioned release (long cache)
         run: |
-          aws s3 sync frontend/dist/ s3://${{ secrets.S3_BUCKET }}/releases/${{ github.sha }}/ \
-            --delete \
+          aws s3 sync frontend/dist/ "s3://${BUCKET}/releases/${{ steps.sha.outputs.sha }}/" \
+            --delete --exclude "index.html" \
             --cache-control "public,max-age=31536000,immutable"
 
-      # кладём метку latest.txt — удобно видеть текущий релиз
-      - name: Write latest pointer
+      - name: Upload index.html to versioned release (no cache)
         run: |
-          echo "${{ github.sha }}" > latest.txt
-          aws s3 cp latest.txt s3://${{ secrets.S3_BUCKET }}/releases/latest.txt \
-            --cache-control "no-cache, no-store, must-revalidate"
+          aws s3 cp frontend/dist/index.html "s3://${BUCKET}/releases/${{ steps.sha.outputs.sha }}/index.html" \
+            --cache-control "no-cache, no-store, must-revalidate" \
+            --content-type "text/html"
 
-      # ПРОМОУШЕН: делаем этот релиз "текущим" — копируем его index.html в корень бакета
-      - name: Promote this release to root
+      # 2) сразу промоутим в корень (прод)
+      - name: Promote version to root (sync all except index.html)
         run: |
-          aws s3 cp s3://${{ secrets.S3_BUCKET }}/releases/${{ github.sha }}/index.html \
-                   s3://${{ secrets.S3_BUCKET }}/index.html \
-                   --cache-control "no-cache, no-store, must-revalidate" \
-                   --content-type "text/html"
+          aws s3 sync "s3://${BUCKET}/releases/${{ steps.sha.outputs.sha }}/" "s3://${BUCKET}/" \
+            --delete --exclude "index.html" \
+            --cache-control "public,max-age=31536000,immutable"
+          aws s3 cp "s3://${BUCKET}/releases/${{ steps.sha.outputs.sha }}/index.html" "s3://${BUCKET}/index.html" \
+            --cache-control "no-cache, no-store, must-revalidate" \
+            --content-type "text/html"
 
-      - name: Invalidate CloudFront (index only)
+      - name: Invalidate CloudFront (index.html)
         run: |
           aws cloudfront create-invalidation \
-            --distribution-id ${{ secrets.CLOUDFRONT_DISTRIBUTION_ID }} \
+            --distribution-id "${CF_DISTR_ID}" \
             --paths "/index.html"
 
   promote:
-    # ручной откат/промо любого sha: Actions → Run workflow → вбей нужный SHA
-    if: github.event_name == 'workflow_dispatch' && github.event.inputs.sha != ''
+    name: promote
+    # ручной запуск: promote-latest или promote-sha
+    if: ${{ github.event_name == 'workflow_dispatch' && (inputs.action == 'promote-latest' || inputs.action == 'promote-sha') }}
     runs-on: ubuntu-latest
+
     steps:
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
@@ -91,17 +116,41 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region:            ${{ secrets.AWS_REGION }}
 
-      - name: Promote provided SHA to root (rollback)
+      - name: Find latest release SHA (if needed)
+        id: latest
         run: |
-          SHA="${{ github.event.inputs.sha }}"
-          echo "Promoting SHA=$SHA"
-          aws s3 cp s3://${{ secrets.S3_BUCKET }}/releases/${SHA}/index.html \
-                   s3://${{ secrets.S3_BUCKET }}/index.html \
-                   --cache-control "no-cache, no-store, must-revalidate" \
-                   --content-type "text/html"
-          echo "$SHA" > latest.txt
-          aws s3 cp latest.txt s3://${{ secrets.S3_BUCKET }}/releases/latest.txt \
-            --cache-control "no-cache, no-store, must-revalidate"
+          key=$(aws s3api list-objects-v2 \
+            --bucket "${BUCKET}" \
+            --prefix "releases/" \
+            --query "reverse(sort_by(Contents[?ends_with(Key, 'index.html')], &LastModified))[0].Key" \
+            --output text)
+          if [ "$key" = "None" ] || [ -z "$key" ]; then
+            echo "No releases found in s3://${BUCKET}/releases/" >&2
+            exit 1
+          fi
+          sha=$(basename "$(dirname "$key")")
+          echo "sha=$sha" >> $GITHUB_OUTPUT
+
+      - name: Choose SHA to promote
+        id: choose
+        run: |
+          if [ -n "${{ inputs.release_sha }}" ]; then
+            echo "sha=${{ inputs.release_sha }}" >> $GITHUB_OUTPUT
+          else
+            echo "sha=${{ steps.latest.outputs.sha }}" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Promote version to root (sync all except index.html)
+        run: |
+          aws s3 sync "s3://${BUCKET}/releases/${{ steps.choose.outputs.sha }}/" "s3://${BUCKET}/" \
+            --delete --exclude "index.html" \
+            --cache-control "public,max-age=31536000,immutable"
+          aws s3 cp "s3://${BUCKET}/releases/${{ steps.choose.outputs.sha }}/index.html" "s3://${BUCKET}/index.html" \
+            --cache-control "no-cache, no-store, must-revalidate" \
+            --content-type "text/html"
+
+      - name: Invalidate CloudFront (index.html)
+        run: |
           aws cloudfront create-invalidation \
-            --distribution-id ${{ secrets.CLOUDFRONT_DISTRIBUTION_ID }} \
+            --distribution-id "${CF_DISTR_ID}" \
             --paths "/index.html"
