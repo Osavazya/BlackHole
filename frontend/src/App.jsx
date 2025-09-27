@@ -63,6 +63,7 @@ export default function App() {
       </div>
 
       {/* Текстовая карточка */}
+
       <section className="hero" role="region" aria-label={selected.name}>
         <div className="panel">
           <h2 className="title">{selected.name}</h2>
