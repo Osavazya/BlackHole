@@ -1,0 +1,39 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: backend
+  labels: { app: backend }
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: backend }
+  template:
+    metadata:
+      labels: { app: backend }
+    spec:
+      containers:
+        - name: backend
+          image: 765762661597.dkr.ecr.eu-south-2.amazonaws.com/blackhole-backend:dev
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8080   # предположим API слушает 8080
+          env:
+            # примеры — подставишь свои значения/Secret позже
+            - name: PORT
+              value: "8080"
+            # - name: DATABASE_URL
+            #   valueFrom:
+            #     secretKeyRef:
+            #       name: backend-secrets
+            #       key: DATABASE_URL
+          readinessProbe:
+            httpGet: { path: "/health", port: 8080 }   # сделай эндпоинт /health
+            initialDelaySeconds: 10
+            periodSeconds: 5
+          livenessProbe:
+            httpGet: { path: "/health", port: 8080 }
+            initialDelaySeconds: 20
+            periodSeconds: 10
+          resources:
+            requests: { cpu: "50m", memory: "128Mi" }
+            limits:   { cpu: "300m", memory: "512Mi" }

@@ -1,0 +1,19 @@
+# kustomize позволяет собирать все ресурсы пачкой
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# Применяем всё в namespace blackhole (и создаём его)
+namespace: blackhole
+
+resources:
+  - ../base/namespace.yaml     # кластерный ресурс, namespace не добавляется — ок
+  - frontend-deploy.yaml
+  - frontend-svc.yaml
+  - backend-deploy.yaml
+  - backend-svc.yaml
+  - ingress.yaml
+
+# Общие лейблы — удобно фильтровать/чистить
+commonLabels:
+  app.kubernetes.io/part-of: blackhole
+  env: dev

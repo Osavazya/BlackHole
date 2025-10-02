@@ -1,0 +1,51 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: app-ingress
+  annotations:
+    # Говорим ALB-контроллеру создать внешний ALB c 80/443
+    alb.ingress.kubernetes.io/scheme: internet-facing
+    alb.ingress.kubernetes.io/target-type: ip
+    alb.ingress.kubernetes.io/listen-ports: '[{"HTTP":80},{"HTTPS":443}]'
+
+    # ⬇️ ВСТАВЬ свой ARN сертификата ACM (в том же регионе, что EKS/ALB)
+    alb.ingress.kubernetes.io/certificate-arn: arn:aws:acm:eu-south-2:111111111111:certificate/xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
+
+    # Редирект с 80 → 443 (через action 'ssl-redirect')
+    alb.ingress.kubernetes.io/actions.ssl-redirect: >
+      {"Type":"redirect","RedirectConfig":{"Protocol":"HTTPS","Port":"443","StatusCode":"HTTP_301"}}
+
+    # Помогает ExternalDNS (он и так увидит hostname, но лишним не будет)
+    external-dns.alpha.kubernetes.io/hostname: app-k8s.blackhole.bond
+spec:
+  ingressClassName: alb
+  rules:
+    - host: app-k8s.blackhole.bond
+      http:
+        paths:
+          # 1) Любой HTTP на 80 — редиректим на HTTPS:443
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: ssl-redirect       # спец. action, не реальный сервис
+                port:
+                  name: use-annotation
+
+          # 2) API: /api -> backend-svc:8080
+          - path: /api
+            pathType: Prefix
+            backend:
+              service:
+                name: backend-svc
+                port:
+                  number: 8080
+
+          # 3) Всё остальное — на фронт
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: frontend-svc
+                port:
+                  number: 80

@@ -1,0 +1,30 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: frontend
+  labels: { app: frontend }
+spec:
+  replicas: 1                      # dev: экономим деньги; потом можно увеличить
+  selector:
+    matchLabels: { app: frontend }
+  template:
+    metadata:
+      labels: { app: frontend }
+    spec:
+      containers:
+        - name: frontend
+          image: 765762661597.dkr.ecr.eu-south-2.amazonaws.com/blackhole-frontend:dev
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 80    # nginx/node serve на 80
+          readinessProbe:          # трафик пойдёт только когда готов
+            httpGet: { path: "/", port: 80 }
+            initialDelaySeconds: 10
+            periodSeconds: 5
+          livenessProbe:           # перезапуск, если завис
+            httpGet: { path: "/", port: 80 }
+            initialDelaySeconds: 20
+            periodSeconds: 10
+          resources:               # очень скромно для dev
+            requests: { cpu: "50m", memory: "64Mi" }
+            limits:   { cpu: "200m", memory: "256Mi" }
