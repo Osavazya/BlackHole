@@ -1,0 +1,91 @@
+name: kube-ci-deploy-dev
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+    paths:
+      - 'frontend/**'
+      - 'backend/**'
+      - 'k8s/**'
+      - '.github/workflows/kube-ci-deploy-dev.yml'
+
+env:
+  AWS_REGION: eu-south-2
+  EKS_CLUSTER: blackhole-eks-dev
+  ECR_REGISTRY: 765762661597.dkr.ecr.eu-south-2.amazonaws.com
+  ROLE_TO_ASSUME: arn:aws:iam::765762661597:role/gh-actions-blackhole-dev
+  NAMESPACE: blackhole-dev
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  build_and_push:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ env.ROLE_TO_ASSUME }}
+          aws-region: ${{ env:AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Compute tag
+        id: vars
+        run: echo "TAG=${GITHUB_SHA::7}" >> $GITHUB_OUTPUT
+
+      - name: Build & push frontend
+        run: |
+          docker buildx build \
+            --file frontend/Dockerfile \
+            --tag $ECR_REGISTRY/blackhole-frontend:dev \
+            --tag $ECR_REGISTRY/blackhole-frontend:${{ steps.vars.outputs.TAG }} \
+            --push .
+
+      - name: Build & push backend
+        run: |
+          docker buildx build \
+            --file backend/Dockerfile \
+            --tag $ECR_REGISTRY/blackhole-backend:dev \
+            --tag $ECR_REGISTRY/blackhole-backend:${{ steps.vars.outputs.TAG }} \
+            --push .
+
+      - name: Export TAG for next job
+        run: echo "IMAGE_TAG=${{ steps.vars.outputs.TAG }}" >> $GITHUB_ENV
+
+  deploy:
+    needs: build_and_push
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ env.ROLE_TO_ASSUME }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Update kubeconfig
+        run: aws eks update-kubeconfig --name "$EKS_CLUSTER" --region "$AWS_REGION"
+
+      - name: Apply manifests (kustomize)
+        run: kubectl apply -k k8s/overlays/dev
+
+      - name: Pin images to commit
+        run: |
+          kubectl -n "$NAMESPACE" set image deploy/frontend frontend=$ECR_REGISTRY/blackhole-frontend:${IMAGE_TAG}
+          kubectl -n "$NAMESPACE" set image deploy/backend  backend=$ECR_REGISTRY/blackhole-backend:${IMAGE_TAG}
+
+      - name: Wait rollout
+        run: |
+          kubectl -n "$NAMESPACE" rollout status deploy/frontend --timeout=180s || true
+          kubectl -n "$NAMESPACE" rollout status deploy/backend  --timeout=180s || true
+
+      - name: Show services/ingress
+        run: kubectl -n "$NAMESPACE" get pods,svc,ingress -o wide
