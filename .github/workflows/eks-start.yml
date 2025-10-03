@@ -1,64 +1,89 @@
-name: EKS • START (create & deploy)
+name: EKS — start (create + controllers + app)
 
 on:
   workflow_dispatch:
+    inputs:
+      cluster_name:
+        description: EKS cluster name (defaults to secret EKS_CLUSTER)
+        required: false
+      region:
+        description: AWS region (defaults to secret AWS_REGION)
+        required: false
+      node_types:
+        description: 'Node instance types JSON array'
+        required: false
+        default: '["t3.medium","t3a.medium"]'
+      nodes_desired:
+        description: Desired nodes
+        required: false
+        default: "2"
+      nodes_min:
+        required: false
+        default: "1"
+      nodes_max:
+        required: false
+        default: "3"
 
 concurrency:
-  group: eks-start-stop
+  group: eks-${{ github.ref }}-start
   cancel-in-progress: false
 
-env:
-  AWS_REGION: ${{ secrets.AWS_REGION }}
-  AWS_ACCOUNT_ID: ${{ secrets.AWS_ACCOUNT_ID }}
-  EKS_CLUSTER: ${{ secrets.EKS_CLUSTER }}
-  ROLE_TO_ASSUME: ${{ secrets.ROLE_TO_ASSUME }} # можно пустым
-  DOMAIN: blackhole.bond
-  TXT_OWNER_ID: eks-blackhole              # как в external-dns у тебя
-  CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}# добавь этот секрет в репо!
-  K8S_MANIFESTS_PATH: k8s                  # путь в репо c манифестами (если есть)
-  NODE_TYPES: 't3.medium,t3a.medium'
-  NODES_DESIRED: '2'
-  NODES_MIN: '1'
-  NODES_MAX: '3'
+permissions:
+  id-token: write
+  contents: read
 
 jobs:
-  up:
+  start:
     runs-on: ubuntu-latest
-
+    env:
+      AWS_REGION: ${{ github.event.inputs.region || secrets.AWS_REGION }}
+      EKS_CLUSTER: ${{ github.event.inputs.cluster_name || secrets.EKS_CLUSTER }}
+      NODE_TYPES: ${{ github.event.inputs.node_types }}
+      NODES_DESIRED: ${{ github.event.inputs.nodes_desired }}
+      NODES_MIN: ${{ github.event.inputs.nodes_min }}
+      NODES_MAX: ${{ github.event.inputs.nodes_max }}
+      DNS_DOMAIN: blackhole.bond
+      TXT_OWNER: eks-${{ github.event.inputs.cluster_name || secrets.EKS_CLUSTER }}
+    
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Configure AWS credentials
+      # Предпочитаем OIDC AssumeRole, fallback на AK/SK
+      - name: Configure AWS (OIDC role)
+        if: ${{ secrets.ROLE_TO_ASSUME != '' }}
         uses: aws-actions/configure-aws-credentials@v4
         with:
+          role-to-assume: ${{ secrets.ROLE_TO_ASSUME }}
+          role-session-name: gha-eks-start
           aws-region: ${{ env.AWS_REGION }}
-          role-to-assume: ${{ env.ROLE_TO_ASSUME }}
+
+      - name: Configure AWS (access keys)
+        if: ${{ secrets.ROLE_TO_ASSUME == '' }}
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
 
-      - name: Install CLIs (kubectl/helm/eksctl)
-        run: |
-          set -euxo pipefail
-          curl -sSL -o /usr/local/bin/kubectl https://storage.googleapis.com/kubernetes-release/release/v1.30.0/bin/linux/amd64/kubectl
-          chmod +x /usr/local/bin/kubectl
-          curl -sSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
-          curl -sSL -o /usr/local/bin/eksctl https://github.com/eksctl-io/eksctl/releases/download/v0.176.0/eksctl_Linux_amd64.tar.gz
-          tar -xzf /usr/local/bin/eksctl -C /usr/local/bin || true
-          # если архив — распакуем корректно
-          if [ -f eksctl_Linux_amd64.tar.gz ]; then tar -xzf eksctl_Linux_amd64.tar.gz; sudo mv eksctl /usr/local/bin/eksctl; rm -f eksctl_Linux_amd64.tar.gz; fi
-          eksctl version
-          helm version
-          kubectl version --client
-
-      - name: Create cluster if missing (eksctl)
+      - name: Install CLIs (awscli, kubectl, eksctl, helm, envsubst)
         shell: bash
         run: |
           set -euo pipefail
-          if eksctl get cluster --name "${EKS_CLUSTER}" --region "${AWS_REGION}" >/dev/null 2>&1; then
-            echo "Cluster ${EKS_CLUSTER} already exists — skip create."
-          else
-            cat > eksctl.yaml <<EOF
+          sudo apt-get update -y
+          sudo apt-get install -y curl jq gettext-base
+          curl -sSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+          curl -sSL -o kubectl "https://storage.googleapis.com/kubernetes-release/release/$(curl -sSL https://storage.googleapis.com/kubernetes-release/release/stable.txt)/bin/linux/amd64/kubectl"
+          sudo install -m 0755 kubectl /usr/local/bin/kubectl
+          curl -sSL "https://github.com/eksctl-io/eksctl/releases/latest/download/eksctl_$(uname -s)_amd64.tar.gz" | tar xz
+          sudo install -m 0755 eksctl /usr/local/bin/eksctl
+
+      - name: Create EKS cluster if missing (eksctl)
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! eksctl get cluster --name "$EKS_CLUSTER" --region "$AWS_REGION" >/dev/null 2>&1; then
+            echo "Cluster $EKS_CLUSTER not found — creating…"
+            cat > eksctl.tmpl.yaml <<'EOF'
 apiVersion: eksctl.io/v1alpha5
 kind: ClusterConfig
 metadata:
@@ -69,7 +94,7 @@ iam:
   withOIDC: true
 managedNodeGroups:
   - name: ng-spot
-    instanceTypes: [${NODE_TYPES}]
+    instanceTypes: ${NODE_TYPES}
     desiredCapacity: ${NODES_DESIRED}
     minSize: ${NODES_MIN}
     maxSize: ${NODES_MAX}
@@ -84,74 +109,90 @@ cloudWatch:
   clusterLogging:
     enableTypes: ["api","authenticator","controllerManager","scheduler"]
 EOF
+            envsubst < eksctl.tmpl.yaml > eksctl.yaml
+            cat eksctl.yaml
             eksctl create cluster -f eksctl.yaml --timeout=40m
+          else
+            echo "Cluster $EKS_CLUSTER already exists — skipping create."
           fi
 
       - name: Update kubeconfig
-        run: aws eks update-kubeconfig --region "${AWS_REGION}" --name "${EKS_CLUSTER}"
+        shell: bash
+        run: |
+          aws eks update-kubeconfig --region "$AWS_REGION" --name "$EKS_CLUSTER"
 
-      # --- AWS Load Balancer Controller (ALB) ---
+      # ---------- AWS Load Balancer Controller ----------
       - name: Ensure IAM policy for ALB controller
+        shell: bash
         run: |
-          set -euxo pipefail
-          POLICY_ARN="arn:aws:iam::${AWS_ACCOUNT_ID}:policy/AWSLoadBalancerControllerIAMPolicy"
-          if ! aws iam get-policy --policy-arn "$POLICY_ARN" >/dev/null 2>&1; then
-            curl -sSL -o iam_policy.json https://raw.githubusercontent.com/kubernetes-sigs/aws-load-balancer-controller/v2.7.1/docs/install/iam_policy.json
-            aws iam create-policy --policy-name AWSLoadBalancerControllerIAMPolicy --policy-document file://iam_policy.json >/dev/null
+          set -euo pipefail
+          POLICY_NAME="AWSLoadBalancerControllerIAMPolicy"
+          POLICY_ARN=$(aws iam list-policies --scope Local --query "Policies[?PolicyName=='${POLICY_NAME}'].Arn" --output text)
+          if [ -z "${POLICY_ARN}" ]; then
+            curl -sSL -o iam-policy.json https://raw.githubusercontent.com/kubernetes-sigs/aws-load-balancer-controller/main/docs/install/iam_policy.json
+            aws iam create-policy --policy-name "${POLICY_NAME}" --policy-document file://iam-policy.json >/dev/null
+            POLICY_ARN=$(aws iam list-policies --scope Local --query "Policies[?PolicyName=='${POLICY_NAME}'].Arn" --output text)
           fi
+          echo "POLICY_ARN=${POLICY_ARN}" >> $GITHUB_ENV
 
-      - name: Create IAM service account (ALB controller)
+      - name: Create IAM service account for ALB controller
+        shell: bash
         run: |
-          set -euxo pipefail
-          eksctl utils associate-iam-oidc-provider --region "${AWS_REGION}" --cluster "${EKS_CLUSTER}" --approve
+          set -euo pipefail
+          eksctl utils associate-iam-oidc-provider --region "$AWS_REGION" --cluster "$EKS_CLUSTER" --approve
           eksctl create iamserviceaccount \
-            --cluster "${EKS_CLUSTER}" \
+            --cluster "$EKS_CLUSTER" \
             --namespace kube-system \
             --name aws-load-balancer-controller \
-            --role-name "AmazonEKSLoadBalancerControllerRole-${EKS_CLUSTER}" \
-            --attach-policy-arn "arn:aws:iam::${AWS_ACCOUNT_ID}:policy/AWSLoadBalancerControllerIAMPolicy" \
+            --role-name "AmazonEKSLoadBalancerControllerRole-$EKS_CLUSTER" \
+            --attach-policy-arn "$POLICY_ARN" \
             --approve \
             --override-existing-serviceaccounts
 
-      - name: Install/upgrade ALB controller (Helm)
+      - name: Install/Upgrade AWS Load Balancer Controller (helm)
+        shell: bash
         run: |
-          set -euxo pipefail
+          set -euo pipefail
           helm repo add eks https://aws.github.io/eks-charts
           helm repo update
           helm upgrade --install aws-load-balancer-controller eks/aws-load-balancer-controller \
             -n kube-system \
-            --set clusterName="${EKS_CLUSTER}" \
+            --set clusterName="$EKS_CLUSTER" \
             --set serviceAccount.create=false \
-            --set serviceAccount.name=aws-load-balancer-controller
+            --set serviceAccount.name=aws-load-balancer-controller \
+            --set region="$AWS_REGION"
 
-      # --- external-dns + Cloudflare ---
-      - name: Install external-dns (Cloudflare)
-        if: env.CF_API_TOKEN != ''
+      # ---------- ExternalDNS (опционально) ----------
+      - name: Install/Upgrade external-dns (Cloudflare) — optional
+        if: ${{ secrets.CLOUDFLARE_API_TOKEN != '' }}
+        shell: bash
         run: |
-          set -euxo pipefail
-          kubectl create ns external-dns --dry-run=client -o yaml | kubectl apply -f -
-          kubectl -n external-dns create secret generic cloudflare-api-token \
-            --from-literal=api-token="${CF_API_TOKEN}" \
-            --dry-run=client -o yaml | kubectl apply -f -
+          set -euo pipefail
+          kubectl create namespace external-dns --dry-run=client -o yaml | kubectl apply -f -
           helm repo add bitnami https://charts.bitnami.com/bitnami
           helm repo update
-          helm upgrade --install external-dns bitnami/external-dns -n external-dns \
+          helm upgrade --install external-dns bitnami/external-dns \
+            -n external-dns \
             --set provider=cloudflare \
-            --set cloudflare.apiTokenSecretName=cloudflare-api-token \
-            --set cloudflare.apiTokenSecretKey=api-token \
-            --set domainFilters={"${DOMAIN}"} \
-            --set txtOwnerId="${TXT_OWNER_ID}" \
+            --set cloudflare.apiToken="${{ secrets.CLOUDFLARE_API_TOKEN }}" \
             --set policy=upsert-only \
-            --set logLevel=info
+            --set txtOwnerId="$TXT_OWNER" \
+            --set domainFilters[0]="$DNS_DOMAIN" \
+            --set interval=1m
 
-      # --- твои манифесты приложения (если лежат в репо) ---
-      - name: Deploy app manifests (optional)
-        if: hashFiles(format('{0}/**/*', env.K8S_MANIFESTS_PATH)) != ''
+      # ---------- Деплой приложения (путь подстрой при необходимости) ----------
+      - name: Deploy app manifests
+        shell: bash
         run: |
-          set -euxo pipefail
-          kubectl apply -k "${K8S_MANIFESTS_PATH}" 2>/dev/null || true
-          kubectl apply -f "${K8S_MANIFESTS_PATH}"
+          set -euo pipefail
+          kubectl create namespace blackhole-dev --dry-run=client -o yaml | kubectl apply -f -
+          if [ -d k8s ]; then
+            kubectl apply -f k8s
+          else
+            echo "No k8s/ directory in repo — skipping app deploy."
+          fi
 
-      # быстрые проверки
-      - name: Show ingresses
-        run: kubectl get ingress -A -o wide
+      - name: Show ingress
+        shell: bash
+        run: |
+          kubectl get ingress -A -o wide || true
