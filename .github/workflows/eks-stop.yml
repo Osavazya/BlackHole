@@ -38,8 +38,7 @@ jobs:
       - name: Install eksctl
         shell: bash
         run: |
-          curl -sSL "https://github.com/weaveworks/eksctl/releases/latest/download/eksctl_$(uname -s)_amd64.tar.gz" \
-            | sudo tar xz -C /usr/local/bin
+          curl -sSL "https://github.com/weaveworks/eksctl/releases/latest/download/eksctl_$(uname -s)_amd64.tar.gz" | sudo tar xz -C /usr/local/bin
 
       - name: Delete EKS cluster (if exists)
         shell: bash
@@ -58,7 +57,6 @@ jobs:
           set -euo pipefail
           CLUSTER_TAG="kubernetes.io/cluster/${EKS_CLUSTER}"
 
-          # ALBs
           aws elbv2 describe-load-balancers --region "$AWS_REGION" \
             --query 'LoadBalancers[].LoadBalancerArn' --output text \
           | tr '\t' '\n' | while read -r ARN; do
@@ -70,7 +68,6 @@ jobs:
               fi
             done
 
-          # Target Groups
           aws elbv2 describe-target-groups --region "$AWS_REGION" \
             --query 'TargetGroups[].TargetGroupArn' --output text \
           | tr '\t' '\n' | while read -r TARN; do
@@ -82,7 +79,6 @@ jobs:
               fi
             done
 
-          # Security Groups
           aws ec2 describe-security-groups --region "$AWS_REGION" \
             --filters "Name=tag-key,Values=${CLUSTER_TAG}" \
             --query "SecurityGroups[].GroupId" --output text \

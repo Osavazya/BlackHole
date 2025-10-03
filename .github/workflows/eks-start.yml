@@ -7,7 +7,6 @@ permissions:
   id-token: write
   contents: read
 
-# Пробрасываем значения в env, чтобы их можно было использовать в if: (env.*)
 env:
   AWS_REGION:             ${{ secrets.AWS_REGION }}
   AWS_ACCOUNT_ID:         ${{ secrets.AWS_ACCOUNT_ID }}
@@ -16,7 +15,7 @@ env:
   AWS_ACCESS_KEY_ID:      ${{ secrets.AWS_ACCESS_KEY_ID }}
   AWS_SECRET_ACCESS_KEY:  ${{ secrets.AWS_SECRET_ACCESS_KEY }}
 
-  # Параметры EKS (можно править без изменения скриптов)
+  # Параметры кластера
   EKS_VERSION:   "1.30"
   NODE_TYPES:    '["t3.medium","t3a.medium"]'
   NODES_DESIRED: "2"
@@ -30,7 +29,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # Предпочитаем OIDC; если ROLE_TO_ASSUME пустая — падаем на AK/SK
+      # Предпочитаем OIDC; если роль не задана — падение на AK/SK
       - name: Configure AWS (OIDC)
         if: ${{ env.ROLE_TO_ASSUME != '' }}
         uses: aws-actions/configure-aws-credentials@v4
@@ -51,14 +50,13 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          # kubectl
           curl -sSL -o kubectl "https://storage.googleapis.com/kubernetes-release/release/$(curl -sSL https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
           sudo install -m 0755 kubectl /usr/local/bin/kubectl
-          # eksctl
-          curl -sSL "https://github.com/weaveworks/eksctl/releases/latest/download/eksctl_$(uname -s)_amd64.tar.gz" \
-            | sudo tar xz -C /usr/local/bin
+          curl -sSL "https://github.com/weaveworks/eksctl/releases/latest/download/eksctl_$(uname -s)_amd64.tar.gz" | sudo tar xz -C /usr/local/bin
           # helm
-          sudo snap install helm --classic
+          curl -sSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+          # envsubst (на runner обычно уже есть, но на всякий случай)
+          sudo apt-get update -y && sudo apt-get install -y gettext-base
 
       - name: Create EKS cluster if missing (eksctl)
         shell: bash
@@ -67,43 +65,39 @@ jobs:
           if aws eks describe-cluster --name "$EKS_CLUSTER" --region "$AWS_REGION" >/dev/null 2>&1; then
             echo "Cluster '$EKS_CLUSTER' already exists — skip create."
           else
-            # Генерим eksctl.yaml (heredoc ВНУТРИ run: |, кавычки у EOF — чтобы не подставлялись переменные на этапе cat)
-            cat > eksctl.yaml <<'EOF'
-apiVersion: eksctl.io/v1alpha5
-kind: ClusterConfig
-metadata:
-  name: ${EKS_CLUSTER}
-  region: ${AWS_REGION}
-  version: "${EKS_VERSION}"
-iam:
-  withOIDC: true
-managedNodeGroups:
-  - name: ng-spot
-    instanceTypes: ${NODE_TYPES}
-    desiredCapacity: ${NODES_DESIRED}
-    minSize: ${NODES_MIN}
-    maxSize: ${NODES_MAX}
-    spot: true
-vpc:
-  nat:
-    gateway: Disable
-  clusterEndpoints:
-    publicAccess: true
-    privateAccess: false
-cloudWatch:
-  clusterLogging:
-    enableTypes: ["api","authenticator","controllerManager","scheduler"]
+            # Шаблон с безопасным отступом; затем его срежем и подставим env
+            cat > eksctl.tmpl <<'EOF'
+              apiVersion: eksctl.io/v1alpha5
+              kind: ClusterConfig
+              metadata:
+                name: ${EKS_CLUSTER}
+                region: ${AWS_REGION}
+                version: "${EKS_VERSION}"
+              iam:
+                withOIDC: true
+              managedNodeGroups:
+                - name: ng-spot
+                  instanceTypes: ${NODE_TYPES}
+                  desiredCapacity: ${NODES_DESIRED}
+                  minSize: ${NODES_MIN}
+                  maxSize: ${NODES_MAX}
+                  spot: true
+              vpc:
+                nat:
+                  gateway: Disable
+                clusterEndpoints:
+                  publicAccess: true
+                  privateAccess: false
+              cloudWatch:
+                clusterLogging:
+                  enableTypes: ["api","authenticator","controllerManager","scheduler"]
 EOF
-            # Подставляем реальные значения окружения
-            sed -i \
-              -e "s|\${EKS_CLUSTER}|${EKS_CLUSTER}|g" \
-              -e "s|\${AWS_REGION}|${AWS_REGION}|g" \
-              -e "s|\${EKS_VERSION}|${EKS_VERSION}|g" \
-              -e "s|\${NODE_TYPES}|${NODE_TYPES}|g" \
-              -e "s|\${NODES_DESIRED}|${NODES_DESIRED}|g" \
-              -e "s|\${NODES_MIN}|${NODES_MIN}|g" \
-              -e "s|\${NODES_MAX}|${NODES_MAX}|g" \
-              eksctl.yaml
+            # срезаем ведущие 2 пробела у каждой строки
+            sed -i 's/^  //' eksctl.tmpl
+            # подставляем значения окружения
+            envsubst < eksctl.tmpl > eksctl.yaml
+            echo "eksctl.yaml:"
+            cat eksctl.yaml
 
             eksctl create cluster -f eksctl.yaml --timeout=40m
           fi
