@@ -1,23 +1,27 @@
-# .github/workflows/eks-start.yml
 name: EKS • start (create/ensure)
 
 on:
   workflow_dispatch:
 
 permissions:
-  id-token: write   # для OIDC
+  id-token: write
   contents: read
 
+# Пробрасываем значения в env, чтобы их можно было использовать в if: (env.*)
 env:
-  AWS_REGION: ${{ secrets.AWS_REGION }}
-  AWS_ACCOUNT_ID: ${{ secrets.AWS_ACCOUNT_ID }}
-  EKS_CLUSTER: ${{ secrets.EKS_CLUSTER }}
-  # параметры nodegroup (можно менять без редактирования скриптов)
-  NODE_TYPES: '["t3.medium","t3a.medium"]'
+  AWS_REGION:             ${{ secrets.AWS_REGION }}
+  AWS_ACCOUNT_ID:         ${{ secrets.AWS_ACCOUNT_ID }}
+  EKS_CLUSTER:            ${{ secrets.EKS_CLUSTER }}
+  ROLE_TO_ASSUME:         ${{ secrets.ROLE_TO_ASSUME }}
+  AWS_ACCESS_KEY_ID:      ${{ secrets.AWS_ACCESS_KEY_ID }}
+  AWS_SECRET_ACCESS_KEY:  ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+
+  # Параметры EKS (можно править без изменения скриптов)
+  EKS_VERSION:   "1.30"
+  NODE_TYPES:    '["t3.medium","t3a.medium"]'
   NODES_DESIRED: "2"
-  NODES_MIN: "1"
-  NODES_MAX: "3"
-  EKS_VERSION: "1.30"
+  NODES_MIN:     "1"
+  NODES_MAX:     "3"
 
 jobs:
   start:
@@ -26,21 +30,21 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # Предпочитаем OIDC; fallback на ключи
+      # Предпочитаем OIDC; если ROLE_TO_ASSUME пустая — падаем на AK/SK
       - name: Configure AWS (OIDC)
-        if: ${{ secrets.ROLE_TO_ASSUME != '' }}
+        if: ${{ env.ROLE_TO_ASSUME != '' }}
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: ${{ secrets.ROLE_TO_ASSUME }}
+          role-to-assume:    ${{ env.ROLE_TO_ASSUME }}
           role-session-name: gha-eks-start
-          aws-region: ${{ env.AWS_REGION }}
+          aws-region:        ${{ env.AWS_REGION }}
 
-      - name: Configure AWS (access keys)
-        if: ${{ secrets.ROLE_TO_ASSUME == '' }}
+      - name: Configure AWS (access keys fallback)
+        if: ${{ env.ROLE_TO_ASSUME == '' }}
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          aws-access-key-id:     ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-access-key-id:     ${{ env.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ env.AWS_SECRET_ACCESS_KEY }}
           aws-region:            ${{ env.AWS_REGION }}
 
       - name: Install kubectl, eksctl, helm
@@ -48,7 +52,7 @@ jobs:
         run: |
           set -euo pipefail
           # kubectl
-          curl -sSL -o kubectl https://storage.googleapis.com/kubernetes-release/release/$(curl -sSL https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl
+          curl -sSL -o kubectl "https://storage.googleapis.com/kubernetes-release/release/$(curl -sSL https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
           sudo install -m 0755 kubectl /usr/local/bin/kubectl
           # eksctl
           curl -sSL "https://github.com/weaveworks/eksctl/releases/latest/download/eksctl_$(uname -s)_amd64.tar.gz" \
@@ -61,8 +65,9 @@ jobs:
         run: |
           set -euo pipefail
           if aws eks describe-cluster --name "$EKS_CLUSTER" --region "$AWS_REGION" >/dev/null 2>&1; then
-            echo "Cluster '$EKS_CLUSTER' already exists — skipping creation."
+            echo "Cluster '$EKS_CLUSTER' already exists — skip create."
           else
+            # Генерим eksctl.yaml (heredoc ВНУТРИ run: |, кавычки у EOF — чтобы не подставлялись переменные на этапе cat)
             cat > eksctl.yaml <<'EOF'
 apiVersion: eksctl.io/v1alpha5
 kind: ClusterConfig
@@ -89,7 +94,7 @@ cloudWatch:
   clusterLogging:
     enableTypes: ["api","authenticator","controllerManager","scheduler"]
 EOF
-            # подставляем значения env внутрь файла
+            # Подставляем реальные значения окружения
             sed -i \
               -e "s|\${EKS_CLUSTER}|${EKS_CLUSTER}|g" \
               -e "s|\${AWS_REGION}|${AWS_REGION}|g" \
@@ -99,6 +104,7 @@ EOF
               -e "s|\${NODES_MIN}|${NODES_MIN}|g" \
               -e "s|\${NODES_MAX}|${NODES_MAX}|g" \
               eksctl.yaml
+
             eksctl create cluster -f eksctl.yaml --timeout=40m
           fi
 
@@ -106,7 +112,7 @@ EOF
         shell: bash
         run: aws eks update-kubeconfig --region "$AWS_REGION" --name "$EKS_CLUSTER"
 
-      # ---------- AWS Load Balancer Controller ----------
+      # -------- AWS Load Balancer Controller --------
       - name: Ensure IAM policy for ALB controller
         shell: bash
         run: |
@@ -114,12 +120,10 @@ EOF
           POLICY_NAME="AWSLoadBalancerControllerIAMPolicy"
           POLICY_ARN="arn:aws:iam::${AWS_ACCOUNT_ID}:policy/${POLICY_NAME}"
           if ! aws iam get-policy --policy-arn "$POLICY_ARN" >/dev/null 2>&1; then
-            curl -sSL -o iam_policy.json \
-              https://raw.githubusercontent.com/kubernetes-sigs/aws-load-balancer-controller/v2.7.1/docs/install/iam_policy.json
-            aws iam create-policy --policy-name "$POLICY_NAME" \
-              --policy-document file://iam_policy.json >/dev/null
+            curl -sSL -o iam_policy.json https://raw.githubusercontent.com/kubernetes-sigs/aws-load-balancer-controller/v2.7.1/docs/install/iam_policy.json
+            aws iam create-policy --policy-name "$POLICY_NAME" --policy-document file://iam_policy.json >/dev/null
           fi
-          echo "POLICY_ARN=$POLICY_ARN" >> $GITHUB_ENV
+          echo "POLICY_ARN=$POLICY_ARN" >> "$GITHUB_ENV"
 
       - name: Create IAM service account for ALB controller
         shell: bash
@@ -145,7 +149,8 @@ EOF
             --set serviceAccount.create=false \
             --set serviceAccount.name=aws-load-balancer-controller
 
-      - name: Show nodes and ingresses
+      - name: Show nodes & ingresses
+        shell: bash
         run: |
-          kubectl get nodes -o wide
-          kubectl get ns
+          kubectl get nodes -o wide || true
+          kubectl get ingress -A -o wide || true
