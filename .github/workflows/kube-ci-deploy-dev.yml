@@ -24,6 +24,8 @@ permissions:
 jobs:
   build_and_push:
     runs-on: ubuntu-latest
+    outputs:
+      IMAGE_TAG: ${{ steps.vars.outputs.TAG }}   # <— отдаём тег во вторую job
     steps:
       - uses: actions/checkout@v4
 
@@ -38,8 +40,9 @@ jobs:
 
       - name: Compute tag
         id: vars
-        run: echo "TAG=${GITHUB_SHA::7}" >> $GITHUB_OUTPUT
+        run: echo "TAG=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
 
+      # Важно: контекст сборки — КОРЕНЬ репозитория (.)
       - name: Build & push frontend
         run: |
           docker buildx build \
@@ -56,12 +59,11 @@ jobs:
             --tag $ECR_REGISTRY/blackhole-backend:${{ steps.vars.outputs.TAG }} \
             --push .
 
-      - name: Export TAG for next job
-        run: echo "IMAGE_TAG=${{ steps.vars.outputs.TAG }}" >> $GITHUB_ENV
-
   deploy:
     needs: build_and_push
     runs-on: ubuntu-latest
+    env:
+      IMAGE_TAG: ${{ needs.build_and_push.outputs.IMAGE_TAG }}   # <— берём тег из первой job
     steps:
       - uses: actions/checkout@v4
 
@@ -74,6 +76,9 @@ jobs:
       - name: Update kubeconfig
         run: aws eks update-kubeconfig --name "$EKS_CLUSTER" --region "$AWS_REGION"
 
+      - name: Ensure namespace exists
+        run: kubectl get ns "$NAMESPACE" || kubectl create ns "$NAMESPACE"
+
       - name: Apply manifests (kustomize)
         run: kubectl apply -k k8s/overlays/dev
 
@@ -82,10 +87,8 @@ jobs:
           kubectl -n "$NAMESPACE" set image deploy/frontend frontend=$ECR_REGISTRY/blackhole-frontend:${IMAGE_TAG}
           kubectl -n "$NAMESPACE" set image deploy/backend  backend=$ECR_REGISTRY/blackhole-backend:${IMAGE_TAG}
 
-      - name: Wait rollout
+      - name: Wait rollout & show status
         run: |
           kubectl -n "$NAMESPACE" rollout status deploy/frontend --timeout=180s || true
           kubectl -n "$NAMESPACE" rollout status deploy/backend  --timeout=180s || true
-
-      - name: Show services/ingress
-        run: kubectl -n "$NAMESPACE" get pods,svc,ingress -o wide
+          kubectl -n "$NAMESPACE" get deploy,po,svc,ingress -o wide
