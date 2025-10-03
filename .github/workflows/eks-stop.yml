@@ -1,92 +1,73 @@
-name: EKS • stop (delete & cleanup)
+name: EKS stop (destroy)
 
 on:
   workflow_dispatch:
 
-permissions:
-  id-token: write
-  contents: read
-
-env:
-  AWS_REGION:            ${{ secrets.AWS_REGION }}
-  AWS_ACCOUNT_ID:        ${{ secrets.AWS_ACCOUNT_ID }}
-  EKS_CLUSTER:           ${{ secrets.EKS_CLUSTER }}
-  ROLE_TO_ASSUME:        ${{ secrets.ROLE_TO_ASSUME }}
-  AWS_ACCESS_KEY_ID:     ${{ secrets.AWS_ACCESS_KEY_ID }}
-  AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+concurrency:
+  group: eks-cluster
+  cancel-in-progress: false
 
 jobs:
   stop:
     runs-on: ubuntu-latest
-    steps:
-      - name: Configure AWS (OIDC)
-        if: ${{ env.ROLE_TO_ASSUME != '' }}
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          role-to-assume:    ${{ env.ROLE_TO_ASSUME }}
-          role-session-name: gha-eks-stop
-          aws-region:        ${{ env.AWS_REGION }}
+    permissions:
+      id-token: write
+      contents: read
 
-      - name: Configure AWS (access keys fallback)
-        if: ${{ env.ROLE_TO_ASSUME == '' }}
+    env:
+      AWS_REGION: ${{ secrets.AWS_REGION }}
+      EKS_CLUSTER: ${{ secrets.EKS_CLUSTER }}
+
+    steps:
+      - name: Configure AWS (OIDC role)
+        if: ${{ secrets.ROLE_TO_ASSUME != '' }}
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          aws-access-key-id:     ${{ env.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ env.AWS_SECRET_ACCESS_KEY }}
-          aws-region:            ${{ env.AWS_REGION }}
+          role-to-assume: ${{ secrets.ROLE_TO_ASSUME }}
+          role-session-name: gha-eks-stop
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Configure AWS (access keys)
+        if: ${{ secrets.ROLE_TO_ASSUME == '' }}
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
 
       - name: Install eksctl
         shell: bash
         run: |
-          curl -sSL "https://github.com/weaveworks/eksctl/releases/latest/download/eksctl_$(uname -s)_amd64.tar.gz" | sudo tar xz -C /usr/local/bin
+          set -euo pipefail
+          curl -sSfL https://github.com/eksctl-io/eksctl/releases/latest/download/eksctl_Linux_amd64.tar.gz | tar -xz
+          sudo mv eksctl /usr/local/bin/eksctl
 
-      - name: Delete EKS cluster (if exists)
+      - name: Delete cluster (best effort)
         shell: bash
         run: |
           set -euo pipefail
-          if aws eks describe-cluster --name "$EKS_CLUSTER" --region "$AWS_REGION" >/dev/null 2>&1; then
-            eksctl delete cluster --name "$EKS_CLUSTER" --region "$AWS_REGION" \
-              --disable-nodegroup-eviction --wait
+          if aws eks describe-cluster --name "${EKS_CLUSTER}" --region "${AWS_REGION}" >/dev/null 2>&1; then
+            eksctl delete cluster --name "${EKS_CLUSTER}" --region "${AWS_REGION}" --disable-nodegroup-eviction --wait
           else
-            echo "Cluster '$EKS_CLUSTER' not found — nothing to delete."
+            echo "Cluster ${EKS_CLUSTER} not found; nothing to delete."
           fi
 
-      - name: Cleanup dangling ALB / TargetGroups / SG by tag
+      # Чистим висячие ALB/TG с префиксом k8s- (на всякий случай)
+      - name: Cleanup orphan ALBs & Target Groups
         shell: bash
         run: |
           set -euo pipefail
-          CLUSTER_TAG="kubernetes.io/cluster/${EKS_CLUSTER}"
-
-          aws elbv2 describe-load-balancers --region "$AWS_REGION" \
-            --query 'LoadBalancers[].LoadBalancerArn' --output text \
-          | tr '\t' '\n' | while read -r ARN; do
-              [ -z "$ARN" ] && continue
-              if aws elbv2 describe-tags --region "$AWS_REGION" --resource-arns "$ARN" \
-                   --query "TagDescriptions[].Tags[?Key=='${CLUSTER_TAG}']" --output text | grep -q .; then
-                echo "Deleting ALB $ARN"
-                aws elbv2 delete-load-balancer --region "$AWS_REGION" --load-balancer-arn "$ARN" || true
-              fi
-            done
-
-          aws elbv2 describe-target-groups --region "$AWS_REGION" \
-            --query 'TargetGroups[].TargetGroupArn' --output text \
-          | tr '\t' '\n' | while read -r TARN; do
-              [ -z "$TARN" ] && continue
-              if aws elbv2 describe-tags --region "$AWS_REGION" --resource-arns "$TARN" \
-                   --query "TagDescriptions[].Tags[?Key=='${CLUSTER_TAG}']" --output text | grep -q .; then
-                echo "Deleting TG $TARN"
-                aws elbv2 delete-target-group --region "$AWS_REGION" --target-group-arn "$TARN" || true
-              fi
-            done
-
-          aws ec2 describe-security-groups --region "$AWS_REGION" \
-            --filters "Name=tag-key,Values=${CLUSTER_TAG}" \
-            --query "SecurityGroups[].GroupId" --output text \
-          | tr '\t' '\n' | while read -r SG; do
-              [ -z "$SG" ] && continue
-              echo "Deleting SG $SG"
-              aws ec2 delete-security-group --region "$AWS_REGION" --group-id "$SG" || true
-            done
-
-      - name: Done
-        run: echo "Cluster and leftovers cleaned."
+          lbs=$(aws elbv2 describe-load-balancers --region "${AWS_REGION}" \
+                --query "LoadBalancers[?starts_with(LoadBalancerName, 'k8s-')].LoadBalancerArn" \
+                --output text || true)
+          for arn in $lbs; do
+            echo "Deleting LB $arn"
+            aws elbv2 delete-load-balancer --region "${AWS_REGION}" --load-balancer-arn "$arn" || true
+          done
+          tgs=$(aws elbv2 describe-target-groups --region "${AWS_REGION}" \
+                --query "TargetGroups[?starts_with(TargetGroupName, 'k8s-')].TargetGroupArn" \
+                --output text || true)
+          for arn in $tgs; do
+            echo "Deleting TG $arn"
+            aws elbv2 delete-target-group --region "${AWS_REGION}" --target-group-arn "$arn" || true
+          done
