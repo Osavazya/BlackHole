@@ -14,32 +14,35 @@ jobs:
       id-token: write
       contents: read
 
+    # Подтягиваем секреты в env и дальше используем env.* в if:
     env:
-      AWS_REGION: ${{ secrets.AWS_REGION }}
-      EKS_CLUSTER: ${{ secrets.EKS_CLUSTER }}
-      AWS_ACCOUNT_ID: ${{ secrets.AWS_ACCOUNT_ID }}
+      AWS_REGION:        ${{ secrets.AWS_REGION }}
+      EKS_CLUSTER:       ${{ secrets.EKS_CLUSTER }}
+      AWS_ACCOUNT_ID:    ${{ secrets.AWS_ACCOUNT_ID }}
+      ROLE_TO_ASSUME:    ${{ secrets.ROLE_TO_ASSUME }}
+      CF_API_TOKEN:      ${{ secrets.CF_API_TOKEN }}
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # OIDC (предпочтительно)
+      # OIDC (если указан роль-ARN)
       - name: Configure AWS (OIDC role)
-        if: ${{ secrets.ROLE_TO_ASSUME != '' }}
+        if: ${{ env.ROLE_TO_ASSUME != '' }}
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: ${{ secrets.ROLE_TO_ASSUME }}
+          role-to-assume:   ${{ env.ROLE_TO_ASSUME }}
           role-session-name: gha-eks-start
-          aws-region: ${{ env.AWS_REGION }}
+          aws-region:       ${{ env.AWS_REGION }}
 
       # Фоллбек на AK/SK
       - name: Configure AWS (access keys)
-        if: ${{ secrets.ROLE_TO_ASSUME == '' }}
+        if: ${{ env.ROLE_TO_ASSUME == '' }}
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-access-key-id:     ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: ${{ env.AWS_REGION }}
+          aws-region:            ${{ env.AWS_REGION }}
 
       - name: Install CLIs (kubectl, eksctl, helm)
         shell: bash
@@ -95,7 +98,7 @@ jobs:
         shell: bash
         run: aws eks update-kubeconfig --region "${AWS_REGION}" --name "${EKS_CLUSTER}"
 
-      # ------- AWS Load Balancer Controller -------
+      # -------- AWS Load Balancer Controller --------
       - name: Ensure IAM policy for ALB controller
         shell: bash
         run: |
@@ -138,11 +141,11 @@ jobs:
             --set serviceAccount.name=aws-load-balancer-controller \
             --set region="${AWS_REGION}"
 
-      # ------- ExternalDNS (Cloudflare) -------
+      # -------- ExternalDNS (Cloudflare) --------
       - name: Install/upgrade ExternalDNS (Cloudflare)
-        if: ${{ secrets.CF_API_TOKEN != '' }}
+        if: ${{ env.CF_API_TOKEN != '' }}
         env:
-          CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+          CF_API_TOKEN: ${{ env.CF_API_TOKEN }}
         shell: bash
         run: |
           set -euo pipefail
