@@ -1,0 +1,92 @@
+name: EKS • STOP (destroy & clean)
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: eks-start-stop
+  cancel-in-progress: false
+
+env:
+  AWS_REGION: ${{ secrets.AWS_REGION }}
+  AWS_ACCOUNT_ID: ${{ secrets.AWS_ACCOUNT_ID }}
+  EKS_CLUSTER: ${{ secrets.EKS_CLUSTER }}
+  ROLE_TO_ASSUME: ${{ secrets.ROLE_TO_ASSUME }}
+
+jobs:
+  down:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: ${{ env.AWS_REGION }}
+          role-to-assume: ${{ env.ROLE_TO_ASSUME }}
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+
+      - name: Install kubectl & eksctl
+        run: |
+          set -euxo pipefail
+          curl -sSL -o kubectl https://storage.googleapis.com/kubernetes-release/release/v1.30.0/bin/linux/amd64/kubectl
+          sudo install -m 0755 kubectl /usr/local/bin/kubectl
+          rm -f kubectl
+          curl -sSL -o /tmp/eksctl.tgz https://github.com/eksctl-io/eksctl/releases/download/v0.176.0/eksctl_Linux_amd64.tar.gz
+          tar -xzf /tmp/eksctl.tgz -C /tmp
+          sudo install -m 0755 /tmp/eksctl /usr/local/bin/eksctl
+
+      - name: Try to connect (if cluster exists)
+        id: kube
+        continue-on-error: true
+        run: |
+          aws eks update-kubeconfig --region "${AWS_REGION}" --name "${EKS_CLUSTER}"
+
+      - name: Delete Ingresses (so ALBs are removed)
+        if: steps.kube.outcome == 'success'
+        run: |
+          set -euxo pipefail
+          kubectl delete ingress --all -A --ignore-not-found=true || true
+          # немного подождать, пока контроллер уберёт ALB
+          for i in {1..20}; do
+            echo "waiting for ALBs to disappear ($i/20)..."
+            sleep 15
+          done
+
+      - name: Delete cluster (eksctl)
+        run: |
+          set -euxo pipefail
+          if eksctl get cluster --name "${EKS_CLUSTER}" --region "${AWS_REGION}" >/dev/null 2>&1; then
+            eksctl delete cluster --name "${EKS_CLUSTER}" --region "${AWS_REGION}" --disable-nodegroup-eviction --force
+          else
+            echo "Cluster ${EKS_CLUSTER} already absent."
+          fi
+
+      - name: Extra cleanup of orphan ALBs / TargetGroups / SGs
+        run: |
+          set -euxo pipefail
+          # ALBs от k8s с тэгом кластера
+          LBS=$(aws elbv2 describe-load-balancers --region "${AWS_REGION}" --query 'LoadBalancers[?starts_with(LoadBalancerName, `k8s-`)].LoadBalancerArn' --output text || true)
+          for LB in $LBS; do
+            TAG=$(aws elbv2 describe-tags --region "${AWS_REGION}" --resource-arns "$LB" --query 'TagDescriptions[0].Tags[?Key==`elbv2.k8s.aws/cluster`].Value|[0]' --output text || echo "")
+            if [ "$TAG" = "${EKS_CLUSTER}" ]; then
+              echo "Deleting orphan LB $LB"
+              aws elbv2 delete-load-balancer --region "${AWS_REGION}" --load-balancer-arn "$LB" || true
+            fi
+          done
+          # Target Groups
+          TGS=$(aws elbv2 describe-target-groups --region "${AWS_REGION}" --query 'TargetGroups[?starts_with(TargetGroupName, `k8s-`)].TargetGroupArn' --output text || true)
+          for TG in $TGS; do
+            TAG=$(aws elbv2 describe-tags --region "${AWS_REGION}" --resource-arns "$TG" --query 'TagDescriptions[0].Tags[?Key==`elbv2.k8s.aws/cluster`].Value|[0]' --output text || echo "")
+            if [ "$TAG" = "${EKS_CLUSTER}" ]; then
+              echo "Deleting orphan TG $TG"
+              aws elbv2 delete-target-group --region "${AWS_REGION}" --target-group-arn "$TG" || true
+            fi
+          done
+          # Security Groups
+          SGS=$(aws ec2 describe-security-groups --region "${AWS_REGION}" \
+                --filters "Name=tag:elbv2.k8s.aws/cluster,Values=${EKS_CLUSTER}" \
+                --query 'SecurityGroups[].GroupId' --output text || true)
+          for SG in $SGS; do
+            echo "Trying to delete SG $SG"
+            aws ec2 delete-security-group --region "${AWS_REGION}" --group-id "$SG" || true
+          done

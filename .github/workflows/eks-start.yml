@@ -1,0 +1,157 @@
+name: EKS • START (create & deploy)
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: eks-start-stop
+  cancel-in-progress: false
+
+env:
+  AWS_REGION: ${{ secrets.AWS_REGION }}
+  AWS_ACCOUNT_ID: ${{ secrets.AWS_ACCOUNT_ID }}
+  EKS_CLUSTER: ${{ secrets.EKS_CLUSTER }}
+  ROLE_TO_ASSUME: ${{ secrets.ROLE_TO_ASSUME }} # можно пустым
+  DOMAIN: blackhole.bond
+  TXT_OWNER_ID: eks-blackhole              # как в external-dns у тебя
+  CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}# добавь этот секрет в репо!
+  K8S_MANIFESTS_PATH: k8s                  # путь в репо c манифестами (если есть)
+  NODE_TYPES: 't3.medium,t3a.medium'
+  NODES_DESIRED: '2'
+  NODES_MIN: '1'
+  NODES_MAX: '3'
+
+jobs:
+  up:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: ${{ env.AWS_REGION }}
+          role-to-assume: ${{ env.ROLE_TO_ASSUME }}
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+
+      - name: Install CLIs (kubectl/helm/eksctl)
+        run: |
+          set -euxo pipefail
+          curl -sSL -o /usr/local/bin/kubectl https://storage.googleapis.com/kubernetes-release/release/v1.30.0/bin/linux/amd64/kubectl
+          chmod +x /usr/local/bin/kubectl
+          curl -sSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+          curl -sSL -o /usr/local/bin/eksctl https://github.com/eksctl-io/eksctl/releases/download/v0.176.0/eksctl_Linux_amd64.tar.gz
+          tar -xzf /usr/local/bin/eksctl -C /usr/local/bin || true
+          # если архив — распакуем корректно
+          if [ -f eksctl_Linux_amd64.tar.gz ]; then tar -xzf eksctl_Linux_amd64.tar.gz; sudo mv eksctl /usr/local/bin/eksctl; rm -f eksctl_Linux_amd64.tar.gz; fi
+          eksctl version
+          helm version
+          kubectl version --client
+
+      - name: Create cluster if missing (eksctl)
+        shell: bash
+        run: |
+          set -euo pipefail
+          if eksctl get cluster --name "${EKS_CLUSTER}" --region "${AWS_REGION}" >/dev/null 2>&1; then
+            echo "Cluster ${EKS_CLUSTER} already exists — skip create."
+          else
+            cat > eksctl.yaml <<EOF
+apiVersion: eksctl.io/v1alpha5
+kind: ClusterConfig
+metadata:
+  name: ${EKS_CLUSTER}
+  region: ${AWS_REGION}
+  version: "1.30"
+iam:
+  withOIDC: true
+managedNodeGroups:
+  - name: ng-spot
+    instanceTypes: [${NODE_TYPES}]
+    desiredCapacity: ${NODES_DESIRED}
+    minSize: ${NODES_MIN}
+    maxSize: ${NODES_MAX}
+    spot: true
+vpc:
+  nat:
+    gateway: Disable
+  clusterEndpoints:
+    publicAccess: true
+    privateAccess: false
+cloudWatch:
+  clusterLogging:
+    enableTypes: ["api","authenticator","controllerManager","scheduler"]
+EOF
+            eksctl create cluster -f eksctl.yaml --timeout=40m
+          fi
+
+      - name: Update kubeconfig
+        run: aws eks update-kubeconfig --region "${AWS_REGION}" --name "${EKS_CLUSTER}"
+
+      # --- AWS Load Balancer Controller (ALB) ---
+      - name: Ensure IAM policy for ALB controller
+        run: |
+          set -euxo pipefail
+          POLICY_ARN="arn:aws:iam::${AWS_ACCOUNT_ID}:policy/AWSLoadBalancerControllerIAMPolicy"
+          if ! aws iam get-policy --policy-arn "$POLICY_ARN" >/dev/null 2>&1; then
+            curl -sSL -o iam_policy.json https://raw.githubusercontent.com/kubernetes-sigs/aws-load-balancer-controller/v2.7.1/docs/install/iam_policy.json
+            aws iam create-policy --policy-name AWSLoadBalancerControllerIAMPolicy --policy-document file://iam_policy.json >/dev/null
+          fi
+
+      - name: Create IAM service account (ALB controller)
+        run: |
+          set -euxo pipefail
+          eksctl utils associate-iam-oidc-provider --region "${AWS_REGION}" --cluster "${EKS_CLUSTER}" --approve
+          eksctl create iamserviceaccount \
+            --cluster "${EKS_CLUSTER}" \
+            --namespace kube-system \
+            --name aws-load-balancer-controller \
+            --role-name "AmazonEKSLoadBalancerControllerRole-${EKS_CLUSTER}" \
+            --attach-policy-arn "arn:aws:iam::${AWS_ACCOUNT_ID}:policy/AWSLoadBalancerControllerIAMPolicy" \
+            --approve \
+            --override-existing-serviceaccounts
+
+      - name: Install/upgrade ALB controller (Helm)
+        run: |
+          set -euxo pipefail
+          helm repo add eks https://aws.github.io/eks-charts
+          helm repo update
+          helm upgrade --install aws-load-balancer-controller eks/aws-load-balancer-controller \
+            -n kube-system \
+            --set clusterName="${EKS_CLUSTER}" \
+            --set serviceAccount.create=false \
+            --set serviceAccount.name=aws-load-balancer-controller
+
+      # --- external-dns + Cloudflare ---
+      - name: Install external-dns (Cloudflare)
+        if: env.CF_API_TOKEN != ''
+        run: |
+          set -euxo pipefail
+          kubectl create ns external-dns --dry-run=client -o yaml | kubectl apply -f -
+          kubectl -n external-dns create secret generic cloudflare-api-token \
+            --from-literal=api-token="${CF_API_TOKEN}" \
+            --dry-run=client -o yaml | kubectl apply -f -
+          helm repo add bitnami https://charts.bitnami.com/bitnami
+          helm repo update
+          helm upgrade --install external-dns bitnami/external-dns -n external-dns \
+            --set provider=cloudflare \
+            --set cloudflare.apiTokenSecretName=cloudflare-api-token \
+            --set cloudflare.apiTokenSecretKey=api-token \
+            --set domainFilters={"${DOMAIN}"} \
+            --set txtOwnerId="${TXT_OWNER_ID}" \
+            --set policy=upsert-only \
+            --set logLevel=info
+
+      # --- твои манифесты приложения (если лежат в репо) ---
+      - name: Deploy app manifests (optional)
+        if: hashFiles(format('{0}/**/*', env.K8S_MANIFESTS_PATH)) != ''
+        run: |
+          set -euxo pipefail
+          kubectl apply -k "${K8S_MANIFESTS_PATH}" 2>/dev/null || true
+          kubectl apply -f "${K8S_MANIFESTS_PATH}"
+
+      # быстрые проверки
+      - name: Show ingresses
+        run: kubectl get ingress -A -o wide
