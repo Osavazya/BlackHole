@@ -1,74 +1,130 @@
-name: EKS stop (destroy)
+name: eks-stop
 
 on:
   workflow_dispatch:
+    inputs:
+      cluster:
+        description: EKS cluster name
+        default: blackhole-eks-dev
+      region:
+        description: AWS region
+        default: eu-south-2
+      nuke_orphans:
+        description: "Delete orphan ALBs/TargetGroups/SGs tagged to this cluster"
+        type: boolean
+        default: true
 
-concurrency:
-  group: eks-cluster
-  cancel-in-progress: false
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  AWS_REGION: ${{ inputs.region }}
+  EKS_CLUSTER: ${{ inputs.cluster }}
 
 jobs:
   stop:
     runs-on: ubuntu-latest
-    permissions:
-      id-token: write
-      contents: read
-
-    env:
-      AWS_REGION:     ${{ secrets.AWS_REGION }}
-      EKS_CLUSTER:    ${{ secrets.EKS_CLUSTER }}
-      ROLE_TO_ASSUME: ${{ secrets.ROLE_TO_ASSUME }}
 
     steps:
-      - name: Configure AWS (OIDC role)
-        if: ${{ env.ROLE_TO_ASSUME != '' }}
+      - uses: actions/checkout@v4
+
+      - name: Decide credentials source
+        id: detect
+        run: |
+          if [ -n "${{ secrets.ROLE_TO_ASSUME }}" ]; then
+            echo "use_oidc=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "use_oidc=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Configure AWS (OIDC)
+        if: steps.detect.outputs.use_oidc == 'true'
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume:   ${{ env.ROLE_TO_ASSUME }}
+          role-to-assume: ${{ secrets.ROLE_TO_ASSUME }}
           role-session-name: gha-eks-stop
-          aws-region:       ${{ env.AWS_REGION }}
+          aws-region: ${{ env.AWS_REGION }}
 
       - name: Configure AWS (access keys)
-        if: ${{ env.ROLE_TO_ASSUME == '' }}
+        if: steps.detect.outputs.use_oidc != 'true'
         uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-access-key-id:     ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region:            ${{ env.AWS_REGION }}
 
-      - name: Install eksctl
-        shell: bash
+      - name: Install eksctl if missing
         run: |
           set -euo pipefail
-          curl -sSfL https://github.com/eksctl-io/eksctl/releases/latest/download/eksctl_Linux_amd64.tar.gz | tar -xz
-          sudo mv eksctl /usr/local/bin/eksctl
-
-      - name: Delete cluster (best effort)
-        shell: bash
-        run: |
-          set -euo pipefail
-          if aws eks describe-cluster --name "${EKS_CLUSTER}" --region "${AWS_REGION}" >/dev/null 2>&1; then
-            eksctl delete cluster --name "${EKS_CLUSTER}" --region "${AWS_REGION}" \
-              --disable-nodegroup-eviction --wait
-          else
-            echo "Cluster ${EKS_CLUSTER} not found; nothing to delete."
+          if ! command -v eksctl >/dev/null; then
+            ARCH=$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/')
+            curl -sL "https://github.com/weaveworks/eksctl/releases/latest/download/eksctl_Linux_${ARCH}.tar.gz" \
+              | tar xz -C /tmp
+            sudo mv /tmp/eksctl /usr/local/bin/
           fi
 
-      - name: Cleanup orphan ALBs & Target Groups
-        shell: bash
+      - name: Delete cluster if exists
         run: |
           set -euo pipefail
-          lbs=$(aws elbv2 describe-load-balancers --region "${AWS_REGION}" \
-                --query "LoadBalancers[?starts_with(LoadBalancerName, 'k8s-')].LoadBalancerArn" \
+          if aws eks describe-cluster --region "$AWS_REGION" --name "$EKS_CLUSTER" >/dev/null 2>&1; then
+            eksctl delete cluster \
+              --name "$EKS_CLUSTER" \
+              --region "$AWS_REGION" \
+              --disable-nodegroup-eviction \
+              --wait
+          else
+            echo "Cluster $EKS_CLUSTER not found — nothing to delete."
+          fi
+
+      - name: Nuke orphan ALBs/TGs/SGs (safe/idempotent)
+        if: ${{ inputs.nuke_orphans }}
+        run: |
+          set -euo pipefail
+          echo "Clean up ELBv2 resources with cluster tags …"
+
+          # Delete LBs tagged to the cluster
+          mapfile -t LBS < <(aws elbv2 describe-load-balancers --region "$AWS_REGION" \
+                          --query 'LoadBalancers[].LoadBalancerArn' --output text | tr '\t' '\n')
+          for arn in "${LBS[@]:-}"; do
+            [ -z "$arn" ] && continue
+            HIT=$(aws elbv2 describe-tags --region "$AWS_REGION" --resource-arns "$arn" \
+                --query "TagDescriptions[0].Tags[?Key=='kubernetes.io/cluster/${EKS_CLUSTER}' || (Key=='elbv2.k8s.aws/cluster' && Value=='${EKS_CLUSTER}')]" \
                 --output text || true)
-          for arn in $lbs; do
-            echo "Deleting LB $arn"
-            aws elbv2 delete-load-balancer --region "${AWS_REGION}" --load-balancer-arn "$arn" || true
+            if [ -n "$HIT" ]; then
+              echo "Deleting LB $arn"
+              aws elbv2 delete-load-balancer --region "$AWS_REGION" --load-balancer-arn "$arn" || true
+            fi
           done
-          tgs=$(aws elbv2 describe-target-groups --region "${AWS_REGION}" \
-                --query "TargetGroups[?starts_with(TargetGroupName, 'k8s-')].TargetGroupArn" \
+
+          # Give ENIs a moment to detach
+          sleep 15
+
+          # Delete TGs tagged to the cluster
+          mapfile -t TGS < <(aws elbv2 describe-target-groups --region "$AWS_REGION" \
+                          --query 'TargetGroups[].TargetGroupArn' --output text | tr '\t' '\n')
+          for arn in "${TGS[@]:-}"; do
+            [ -z "$arn" ] && continue
+            HIT=$(aws elbv2 describe-tags --region "$AWS_REGION" --resource-arns "$arn" \
+                --query "TagDescriptions[0].Tags[?Key=='kubernetes.io/cluster/${EKS_CLUSTER}' || (Key=='elbv2.k8s.aws/cluster' && Value=='${EKS_CLUSTER}')]" \
                 --output text || true)
-          for arn in $tgs; do
-            echo "Deleting TG $arn"
-            aws elbv2 delete-target-group --region "${AWS_REGION}" --target-group-arn "$arn" || true
+            if [ -n "$HIT" ]; then
+              echo "Deleting TG $arn"
+              aws elbv2 delete-target-group --region "$AWS_REGION" --target-group-arn "$arn" || true
+            fi
           done
+
+          # Delete LB security groups owned by the cluster
+          mapfile -t SGS < <(aws ec2 describe-security-groups --region "$AWS_REGION" \
+            --filters "Name=tag-key,Values=kubernetes.io/cluster/${EKS_CLUSTER}" "Name=tag-value,Values=owned" \
+            --query "SecurityGroups[].GroupId" --output text | tr '\t' '\n')
+          for sg in "${SGS[@]:-}"; do
+            echo "Deleting SG $sg"
+            aws ec2 delete-security-group --region "$AWS_REGION" --group-id "$sg" || true
+          done
+
+      - name: Show remaining CFN stacks (should be none)
+        run: |
+          aws cloudformation list-stacks --region "$AWS_REGION" \
+            --query "StackSummaries[?contains(StackName, \`eksctl-${EKS_CLUSTER}\`) && StackStatus!='DELETE_COMPLETE'].[StackName,StackStatus]" \
+            --output table || true
