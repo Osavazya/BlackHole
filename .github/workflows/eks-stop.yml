@@ -1,7 +1,6 @@
 name: eks-stop
 
 on:
-  # ручной запуск (кнопкой Run workflow). В выпадашке можно выбрать ветку.
   workflow_dispatch:
     inputs:
       cluster:
@@ -17,11 +16,9 @@ on:
         required: true
         default: "true"
 
-  # чтобы видеть и тестировать воркфлоу в НЕ-main ветке
-  # (если у тебя ветка другая — укажи её здесь)
   push:
     branches:
-      - feat/k8s-ci
+      - feat/k8s-ci         # дай свою ветку, если другая
     paths:
       - .github/workflows/eks-stop.yml
 
@@ -30,24 +27,31 @@ concurrency:
   cancel-in-progress: false
 
 permissions:
-  id-token: write     # для OIDC assume-role
+  id-token: write
   contents: read
 
 jobs:
   stop:
     runs-on: ubuntu-latest
 
-    # Значения по умолчанию берём из inputs, иначе — из secrets
     env:
+      # значения из inputs, fallback к secrets
       AWS_REGION: ${{ github.event.inputs.region || secrets.AWS_REGION }}
       EKS_CLUSTER: ${{ github.event.inputs.cluster || secrets.EKS_CLUSTER }}
+      NUKE_ORPHANS: ${{ github.event.inputs.nuke_orphans || 'true' }}
+
+      # секреты заводим в env — и проверяем через env.*
       ROLE_TO_ASSUME: ${{ secrets.ROLE_TO_ASSUME }}
+      AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+      CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+      CF_ZONE_ID: ${{ secrets.CF_ZONE_ID }}
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # --- AWS creds через OIDC роль (если задана) ---
+      # OIDC-роль, если есть
       - name: Configure AWS (OIDC role)
         if: ${{ env.ROLE_TO_ASSUME != '' }}
         uses: aws-actions/configure-aws-credentials@v4
@@ -56,13 +60,13 @@ jobs:
           role-session-name: gha-eks-stop
           aws-region: ${{ env.AWS_REGION }}
 
-      # --- или доступ по ключам, если роли нет ---
+      # иначе ключи
       - name: Configure AWS (access keys)
         if: ${{ env.ROLE_TO_ASSUME == '' }}
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-access-key-id: ${{ env.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ env.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ env.AWS_REGION }}
 
       - name: Install eksctl
@@ -93,11 +97,11 @@ jobs:
           fi
 
       - name: Nuke orphan ELBv2 resources (optional)
-        if: ${{ (github.event.inputs.nuke_orphans || 'true') == 'true' }}
+        if: ${{ env.NUKE_ORPHANS == 'true' }}
         run: |
           set -euo pipefail
           echo "Looking for orphan k8s ELBv2 resources in $AWS_REGION ..."
-          # ALBs/NLBs, которые иногда остаются после удаления стэков
+          # ALBs/NLBs (k8s-*)
           lbs=$(aws elbv2 describe-load-balancers --region "$AWS_REGION" \
             --query "LoadBalancers[?starts_with(DNSName, 'k8s-')].[LoadBalancerArn]" \
             --output text || true)
@@ -105,7 +109,7 @@ jobs:
             echo "Deleting LB $lb"
             aws elbv2 delete-load-balancer --region "$AWS_REGION" --load-balancer-arn "$lb" || true
           done
-          # Target Groups
+          # Target Groups (k8s-*)
           tgs=$(aws elbv2 describe-target-groups --region "$AWS_REGION" \
             --query "TargetGroups[?starts_with(TargetGroupName, 'k8s-')].TargetGroupArn" \
             --output text || true)
@@ -123,15 +127,12 @@ jobs:
           done
 
       - name: ExternalDNS / Cloudflare cleanup (optional)
-        if: ${{ secrets.CF_API_TOKEN != '' }}
-        env:
-          CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
-          CF_ZONE_ID: ${{ secrets.CF_ZONE_ID }}
-          DNS_NAME: app-k8s.blackhole.bond
+        if: ${{ env.CF_API_TOKEN != '' }}
         run: |
           set -euo pipefail
           if [ -n "${CF_ZONE_ID:-}" ]; then
             if ! command -v jq >/dev/null; then sudo apt-get update -y && sudo apt-get install -y jq; fi
+            DNS_NAME="app-k8s.blackhole.bond"
             rec_id=$(curl -sS -H "Authorization: Bearer $CF_API_TOKEN" \
               "https://api.cloudflare.com/client/v4/zones/$CF_ZONE_ID/dns_records?type=CNAME&name=$DNS_NAME" \
               | jq -r '.result[0].id // empty')
